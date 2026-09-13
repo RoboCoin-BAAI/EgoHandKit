@@ -124,6 +124,10 @@ def build_arg_parser():
                         help='Backend model to use (hamer, htm, wilor, or hawor)')
     parser.add_argument('--frontend', choices=['legacy', 'observations'], default='legacy',
                         help='Legacy YOLO/cleanup or all-person ViTPose observation selection (offline)')
+    parser.add_argument('--motion_prediction_weight', type=float, default=0.0,
+                        help='Optional robust constant-velocity prior for observations association')
+    parser.add_argument('--switch_penalty', type=float, default=0.0,
+                        help='Optional penalty for high-cost continued track assignments')
     parser.add_argument('--output_root', type=str, default='test_data/hand_proc',
                         help='Root directory for outputs. Default: test_data/hand_proc')
     parser.add_argument('--fps', type=int, default=15,
@@ -249,9 +253,20 @@ def main():
 
     if args.frontend == 'observations':
         from observation_frontend.adapter import run_observation_frontend
+        from observation_frontend.physical_hand_temporal_association import (
+            DEFAULT_CONFIG as DEFAULT_ASSOCIATION_CONFIG,
+        )
+        from dataclasses import replace
+
+        association_config = replace(
+            DEFAULT_ASSOCIATION_CONFIG,
+            motion_prediction_weight=args.motion_prediction_weight,
+            high_cost_switch_penalty=args.switch_penalty,
+        )
 
         cleaned_data = run_observation_frontend(
             img_paths, out_dir, repo_root, device, fps=fps, force=args.force_detect,
+            association_config=association_config,
         )
     elif pass1_cache.exists() and not args.force_detect:
         print(f"\nLoading cached Pass 1 results from {pass1_cache}")

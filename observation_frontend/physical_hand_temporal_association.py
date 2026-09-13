@@ -33,6 +33,8 @@ class PhysicalHandTemporalAssociationConfig:
     # Kept opt-in until sequence-level tuning confirms the motion prior does
     # not overrule a genuine crossing/occlusion event.
     motion_prediction_weight: float = 0.0
+    motion_huber_delta: float = 1.0
+    high_cost_switch_penalty: float = 0.0
     handedness_flip_penalty: float = 0.18
     observation_quality_weight: float = 0.25
     gap_connection_penalty: float = 0.15
@@ -261,7 +263,12 @@ def _motion_prediction_cost(
             np.median(np.linalg.norm(current_points[valid, :2] - predicted_points, axis=1))
             / scale
         )
-    return config.motion_prediction_weight * (0.65 * center_residual + 0.35 * keypoint_residual)
+    residual = 0.65 * center_residual + 0.35 * keypoint_residual
+    # A robust loss prevents one abrupt acceleration or occlusion from
+    # overwhelming the visual/geometric evidence.
+    delta = max(1e-6, float(config.motion_huber_delta))
+    robust = 0.5 * residual * residual if residual <= delta else delta * (residual - 0.5 * delta)
+    return config.motion_prediction_weight * robust
 
 
 def _frame_assignments(observation_count: int) -> list[tuple[int | None, int | None]]:
@@ -360,6 +367,11 @@ def _update_track(
             total = float(metrics["association_cost"])
             if motion_cost is not None:
                 total += motion_cost
+            if total > config.identity_switch_cost_threshold:
+                total += config.high_cost_switch_penalty
+                step["switch_penalty"] = config.high_cost_switch_penalty
+            else:
+                step["switch_penalty"] = 0.0
             step["association_cost"] = total
             return ((current_key, anchor_side, last_key), total, step)
 
@@ -663,6 +675,7 @@ def associate_physical_hand_tracks(
                 "normalized_palm_distance": step.get("normalized_palm_distance"),
                 "palm_cost_available": step.get("palm_cost_available", False),
                 "motion_prediction_cost": step.get("motion_prediction_cost"),
+                "switch_penalty": step.get("switch_penalty", 0.0),
                 "handedness_penalty": step.get("handedness_penalty", 0.0),
                 "observation_quality": step.get("observation_quality"),
                 "gap_length": step.get("gap_length"),

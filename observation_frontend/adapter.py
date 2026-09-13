@@ -13,6 +13,10 @@ from tqdm import tqdm
 
 from .failure_diagnostics import jsonable
 from .pre_hamer_observation_frontend import select_pre_hamer_observations
+from .physical_hand_temporal_association import (
+    DEFAULT_CONFIG as DEFAULT_ASSOCIATION_CONFIG,
+    PhysicalHandTemporalAssociationConfig,
+)
 
 
 def extract_observations(image_paths, body_detector, vitpose, fps=30):
@@ -85,7 +89,12 @@ def _file_identity(path):
     return [str(path), stat.st_size, stat.st_mtime_ns]
 
 
-def cache_signature(image_paths, repo_root, fps):
+def cache_signature(
+    image_paths,
+    repo_root,
+    fps,
+    association_config: PhysicalHandTemporalAssociationConfig = DEFAULT_ASSOCIATION_CONFIG,
+):
     root = Path(repo_root)
     assets = [
         root / '_DATA/detectron2/model_final_f05665.pkl',
@@ -102,6 +111,7 @@ def cache_signature(image_paths, repo_root, fps):
         'assets': [_file_identity(path) for path in assets],
         'code': [hashlib.sha256(path.read_bytes()).hexdigest() for path in modules],
         'fps': fps,
+        'association_config': association_config.as_dict(),
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
@@ -144,12 +154,20 @@ def _detect_with_models(image_paths, repo_root, device, fps):
             torch.cuda.empty_cache()
 
 
-def run_observation_frontend(image_paths, out_dir, repo_root, device, fps=30, force=False):
+def run_observation_frontend(
+    image_paths,
+    out_dir,
+    repo_root,
+    device,
+    fps=30,
+    force=False,
+    association_config: PhysicalHandTemporalAssociationConfig = DEFAULT_ASSOCIATION_CONFIG,
+):
     if not image_paths or fps <= 0:
         raise ValueError('Observation frontend requires images and a positive FPS')
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    signature = cache_signature(image_paths, repo_root, fps)
+    signature = cache_signature(image_paths, repo_root, fps, association_config)
     selected_path = out_dir / 'observations_selected.pkl'
     selected = None if force else _load_cache(selected_path, signature)
     if selected is None:
@@ -158,7 +176,9 @@ def run_observation_frontend(image_paths, out_dir, repo_root, device, fps=30, fo
         if raw is None:
             raw = _detect_with_models(image_paths, repo_root, device, fps)
             _save_cache(raw_path, signature, raw)
-        selected = select_pre_hamer_observations(raw['frames'], image_size=raw['image_size'])
+        selected = select_pre_hamer_observations(
+            raw['frames'], image_size=raw['image_size'], association_config=association_config,
+        )
         _save_cache(selected_path, signature, selected)
     else:
         print(f'Loading selected observation cache: {selected_path}')
