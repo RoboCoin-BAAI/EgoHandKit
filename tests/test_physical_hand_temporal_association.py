@@ -4,6 +4,7 @@ import numpy as np
 
 from observation_frontend.physical_hand_temporal_association import (
     PhysicalHandTemporalAssociationConfig,
+    _motion_prediction_cost,
     associate_physical_hand_tracks,
 )
 
@@ -57,6 +58,21 @@ def test_two_stable_observations_associate_to_one_track() -> None:
 
     assert result["summary"]["number_of_tracks"] == 1
     assert len({_track_for_candidate(result, i, 0) for i in range(3)}) == 1
+
+
+def test_motion_prediction_cost_uses_two_previous_observations() -> None:
+    frames = [
+        _frame(0, [_observation(0, 0, (100, 100))]),
+        _frame(1, [_observation(1, 0, (110, 100))]),
+        _frame(2, [_observation(2, 0, (120, 100))]),
+    ]
+    lookup = {(f["frame_idx"], 0): f["observations"][0] for f in frames}
+    config = PhysicalHandTemporalAssociationConfig(motion_prediction_weight=1.0)
+    cost = _motion_prediction_cost(
+        (0, 0), (1, 0), frames[2]["observations"][0], lookup,
+        gap_length=0, config=config,
+    )
+    assert cost == 0.0
 
 
 def test_two_spatially_separated_hands_form_two_tracks() -> None:

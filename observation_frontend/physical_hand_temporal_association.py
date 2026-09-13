@@ -13,8 +13,9 @@ from observation_frontend.hand_observation_consolidation import (
 )
 
 ObservationKey = tuple[int, int]
-TrackMemory = tuple[ObservationKey | None, str | None]
-AssociationState = tuple[TrackMemory, TrackMemory]
+TrackMemory = tuple[ObservationKey | None, str | None, ObservationKey | None]
+StateMemory = tuple[ObservationKey | None, str | None]
+AssociationState = tuple[StateMemory, StateMemory]
 
 
 @dataclass(frozen=True)
@@ -29,6 +30,9 @@ class PhysicalHandTemporalAssociationConfig:
     bbox_scale_weight: float = 0.15
     keypoint_distance_weight: float = 0.65
     palm_distance_weight: float = 0.25
+    # Kept opt-in until sequence-level tuning confirms the motion prior does
+    # not overrule a genuine crossing/occlusion event.
+    motion_prediction_weight: float = 0.0
     handedness_flip_penalty: float = 0.18
     observation_quality_weight: float = 0.25
     gap_connection_penalty: float = 0.15
@@ -76,6 +80,7 @@ class _DpNode:
     assignments: tuple[int | None, int | None]
     track_steps: tuple[dict[str, Any], dict[str, Any]]
     unassigned_indices: tuple[int, ...]
+    memories: tuple[TrackMemory, TrackMemory]
 
 
 def _candidate_id(observation: Mapping[str, Any]) -> int:
@@ -212,6 +217,53 @@ def temporal_association_metrics(
     }
 
 
+def _motion_prediction_cost(
+    previous_key: ObservationKey | None,
+    last_key: ObservationKey | None,
+    current: Mapping[str, Any],
+    lookup: Mapping[ObservationKey, Mapping[str, Any]],
+    *,
+    gap_length: int,
+    config: PhysicalHandTemporalAssociationConfig,
+) -> float | None:
+    """Predict the current center from the last two observations."""
+    if previous_key is None or last_key is None:
+        return None
+    previous = lookup.get(previous_key)
+    last = lookup.get(last_key)
+    if previous is None or last is None:
+        return None
+    previous_bbox = np.asarray(previous["bbox_xyxy"], dtype=np.float64).reshape(4)
+    last_bbox = np.asarray(last["bbox_xyxy"], dtype=np.float64).reshape(4)
+    current_bbox = np.asarray(current["bbox_xyxy"], dtype=np.float64).reshape(4)
+    previous_center = (previous_bbox[:2] + previous_bbox[2:]) / 2.0
+    last_center = (last_bbox[:2] + last_bbox[2:]) / 2.0
+    current_center = (current_bbox[:2] + current_bbox[2:]) / 2.0
+    scale = _hand_scale(last_bbox, current_bbox)
+    steps = max(1, int(gap_length) + 1)
+    predicted_center = last_center + (last_center - previous_center) * steps
+    center_residual = float(np.linalg.norm(current_center - predicted_center) / scale)
+
+    previous_points = _keypoints(previous)
+    last_points = _keypoints(last)
+    current_points = _keypoints(current)
+    valid = (
+        (previous_points[:, 2] > config.keypoint_threshold)
+        & (last_points[:, 2] > config.keypoint_threshold)
+        & (current_points[:, 2] > config.keypoint_threshold)
+    )
+    keypoint_residual = 0.0
+    if int(np.count_nonzero(valid)) >= config.min_common_keypoints:
+        predicted_points = last_points[valid, :2] + (
+            last_points[valid, :2] - previous_points[valid, :2]
+        ) * steps
+        keypoint_residual = float(
+            np.median(np.linalg.norm(current_points[valid, :2] - predicted_points, axis=1))
+            / scale
+        )
+    return config.motion_prediction_weight * (0.65 * center_residual + 0.35 * keypoint_residual)
+
+
 def _frame_assignments(observation_count: int) -> list[tuple[int | None, int | None]]:
     choices: list[int | None] = [None, *range(observation_count)]
     return [
@@ -243,7 +295,7 @@ def _update_track(
     lookup: Mapping[ObservationKey, Mapping[str, Any]],
     config: PhysicalHandTemporalAssociationConfig,
 ) -> tuple[TrackMemory, float, dict[str, Any]]:
-    last_key, anchor_side = memory
+    last_key, anchor_side, previous_key = memory
     ever_started = anchor_side is not None
     if observation_index is None:
         if last_key is None:
@@ -272,7 +324,7 @@ def _update_track(
                 },
             )
         return (
-            (None, anchor_side),
+            (None, anchor_side, previous_key),
             0.0,
             {
                 "state": "missing",
@@ -294,16 +346,22 @@ def _update_track(
                 gap_length=gap_length,
                 config=config,
             )
-            return (
-                (current_key, anchor_side),
-                float(metrics["association_cost"]),
-                {
-                    "state": "observed",
-                    **metrics,
-                    "continued": True,
-                    "restart": False,
-                },
+            motion_cost = _motion_prediction_cost(
+                previous_key, last_key, current, lookup,
+                gap_length=gap_length, config=config,
             )
+            step = {
+                "state": "observed",
+                **metrics,
+                "continued": True,
+                "restart": False,
+                "motion_prediction_cost": motion_cost,
+            }
+            total = float(metrics["association_cost"])
+            if motion_cost is not None:
+                total += motion_cost
+            step["association_cost"] = total
+            return ((current_key, anchor_side, last_key), total, step)
 
     start_penalty = (
         config.track_restart_penalty
@@ -319,7 +377,7 @@ def _update_track(
     unary = config.observation_quality_weight * (1.0 - _quality(current))
     total = start_penalty + restart_handedness_penalty + unary
     return (
-        (current_key, anchor_side or current_side),
+        (current_key, anchor_side or current_side, None),
         total,
         {
             "state": "observed",
@@ -500,10 +558,10 @@ def associate_physical_hand_tracks(
             },
         }
 
-    dormant: TrackMemory = (None, None)
+    dormant: TrackMemory = (None, None, None)
     initial_state: AssociationState = (dormant, dormant)
     previous_layer: dict[AssociationState, _DpNode] = {
-        initial_state: _DpNode(0.0, None, (None, None), ({}, {}), ())
+        initial_state: _DpNode(0.0, None, (None, None), ({}, {}), (), (dormant, dormant))
     }
     layers: list[dict[AssociationState, _DpNode]] = []
     for frame in normalised:
@@ -524,7 +582,7 @@ def associate_physical_hand_tracks(
                 steps: list[dict[str, Any]] = []
                 for track_id in range(config.max_tracks):
                     memory, cost, step = _update_track(
-                        previous_state[track_id],
+                        previous_node.memories[track_id],
                         assignments[track_id],
                         frame_idx=frame_idx,
                         observations=observations,
@@ -543,7 +601,10 @@ def associate_physical_hand_tracks(
                     > _observation_center_x(observations[assignments[1]])
                 ):
                     total += config.canonical_start_order_penalty
-                new_state: AssociationState = (new_memories[0], new_memories[1])
+                new_state: AssociationState = (
+                    (new_memories[0][0], new_memories[0][1]),
+                    (new_memories[1][0], new_memories[1][1]),
+                )
                 existing = current_layer.get(new_state)
                 if existing is None or total < existing.cost - 1e-12:
                     current_layer[new_state] = _DpNode(
@@ -552,6 +613,7 @@ def associate_physical_hand_tracks(
                         assignments=assignments,
                         track_steps=(steps[0], steps[1]),
                         unassigned_indices=unassigned_indices,
+                        memories=(new_memories[0], new_memories[1]),
                     )
         layers.append(current_layer)
         previous_layer = current_layer
@@ -600,6 +662,7 @@ def associate_physical_hand_tracks(
                 "keypoint_cost_available": step.get("keypoint_cost_available", False),
                 "normalized_palm_distance": step.get("normalized_palm_distance"),
                 "palm_cost_available": step.get("palm_cost_available", False),
+                "motion_prediction_cost": step.get("motion_prediction_cost"),
                 "handedness_penalty": step.get("handedness_penalty", 0.0),
                 "observation_quality": step.get("observation_quality"),
                 "gap_length": step.get("gap_length"),

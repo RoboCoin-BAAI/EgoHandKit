@@ -49,6 +49,12 @@ change of backend handedness. It never concatenates different physical hands
 solely because their side labels match. This necessary temporal adaptation is
 not evidence that HaWoR reproduces the source HaMeR results.
 
+The association module also contains an optional two-frame constant-velocity
+prior (`motion_prediction_weight`). It is disabled by default while sequence-
+level tuning is in progress; enabling it adds predicted center/keypoint
+residuals to the soft association cost without turning handedness into a hard
+identity constraint.
+
 This is a single-target, at-most-two-hands selection baseline. It does not
 identify the camera wearer. With several real people visible, selected hands
 can belong to different people. Long gaps may reuse a track slot with a new
