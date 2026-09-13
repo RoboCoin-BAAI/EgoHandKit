@@ -296,6 +296,15 @@ def main():
     print(f"\nResults saved to {res_path}")
 
     if args.omega_world:
+        # Pass 4 uses a second large model.  Release the HMR model first so
+        # Omega's chunk can fit on GPUs with limited VRAM (for example 12 GB).
+        omega_backend_name = backend_bundle.backend_name
+        omega_model_cfg = backend_bundle.model_cfg
+        del model
+        backend_bundle.model = None
+        gc.collect()
+        if device.type == 'cuda':
+            torch.cuda.empty_cache()
         print("\n" + "=" * 80)
         print("Pass 4 - OMEGA WORLD: camera recovery and MANO world-space derivation")
         print("=" * 80)
@@ -317,8 +326,8 @@ def main():
         omega_world_results = derive_omega_world_results(
             camera_space_results=results,
             omega_camera=omega_camera,
-            backend_name=backend_bundle.backend_name,
-            backend_model_cfg=backend_bundle.model_cfg,
+            backend_name=omega_backend_name,
+            backend_model_cfg=omega_model_cfg,
             source_pkl_path=res_path,
             omega_cache_path=out_dir / 'omega_camera.npz',
             output_path=omega_world_path,

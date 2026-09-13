@@ -9,6 +9,9 @@ OUTPUT_ROOT="${OUTPUT_ROOT:-/home/user/ego_data/结果对比/egohandkit_left_bat
 GPU="${GPU:-0}"
 IMG_FOCAL="${IMG_FOCAL:-600}"
 BATCH_SIZE="${BATCH_SIZE:-2}"
+OMEGA_CHUNK_SIZE="${OMEGA_CHUNK_SIZE:-16}"
+OMEGA_OVERLAP="${OMEGA_OVERLAP:-8}"
+OMEGA_IMAGE_RESOLUTION="${OMEGA_IMAGE_RESOLUTION:-512}"
 FORCE="${FORCE:-0}"
 
 command -v ffmpeg >/dev/null || { echo "ffmpeg is required" >&2; exit 1; }
@@ -38,19 +41,23 @@ for video in "${videos[@]}"; do
 
   echo
   echo "===== $session / left ====="
-  if [[ "$FORCE" == 1 || ! -f "$before_video" ]]; then
+  if [[ "$FORCE" == 1 || ! -f "$before_video" || ! -f "$before_world" ]]; then
     "$PYTHON" -u "$ROOT/run.py" \
       --input "$video" --backend hawor --frontend legacy --gpu "$GPU" \
       --batch_size "$BATCH_SIZE" --img_focal "$IMG_FOCAL" --omega_world \
+      --omega_chunk_size "$OMEGA_CHUNK_SIZE" --omega_overlap "$OMEGA_OVERLAP" \
+      --omega_image_resolution "$OMEGA_IMAGE_RESOLUTION" \
       --output_root "$before_root" 2>&1 | tee "$session_root/before.log"
   else
     echo "Reuse: $before_video"
   fi
 
-  if [[ "$FORCE" == 1 || ! -f "$after_video" ]]; then
+  if [[ "$FORCE" == 1 || ! -f "$after_video" || ! -f "$after_world" ]]; then
     "$PYTHON" -u "$ROOT/run.py" \
       --input "$video" --backend hawor --frontend observations --gpu "$GPU" \
       --batch_size "$BATCH_SIZE" --img_focal "$IMG_FOCAL" --omega_world \
+      --omega_chunk_size "$OMEGA_CHUNK_SIZE" --omega_overlap "$OMEGA_OVERLAP" \
+      --omega_image_resolution "$OMEGA_IMAGE_RESOLUTION" \
       --output_root "$after_root" 2>&1 | tee "$session_root/after.log"
   else
     echo "Reuse: $after_video"
