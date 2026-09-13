@@ -156,6 +156,9 @@ dmypy.json
 *.ckpt
 *.pt
 *.pth
+/_DATA/data/mano/
+/_DATA/detectron2/
+/_DATA/**/*.part
 
 # Docs
 /docs/

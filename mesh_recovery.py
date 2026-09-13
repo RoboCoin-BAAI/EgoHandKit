@@ -8,6 +8,7 @@ Given cleaned bbox data from Pass 1/2, this module:
 """
 
 from pathlib import Path
+from copy import deepcopy
 import os
 import cv2
 import numpy as np
@@ -46,11 +47,63 @@ def _resolve_hawor_focal(args, seq_folder: Path | None):
     return img_focal
 
 
+def _collect_observation_inputs(frames, args, backend_name):
+    img_paths = [Path(frame['img_path']) for frame in frames]
+    image = cv2.imread(str(img_paths[0]))
+    if image is None:
+        raise ValueError(f'Cannot read image: {img_paths[0]}')
+    instances, segments, by_key, last_by_track = [], [], {}, {}
+    for frame in frames:
+        for observation in frame['selected_for_hamer']:
+            side = observation['handedness']
+            if side not in ('left', 'right'):
+                raise ValueError(f'Unsupported original handedness: {side}')
+            track = int(observation['physical_track_id'])
+            fragment = int(observation['physical_track_fragment_id'])
+            index = frame['frame_idx']
+            key = (index, f'physical_{track}')
+            if key in by_key:
+                raise ValueError(f'Duplicate physical track in frame {index}: {track}')
+            bbox = np.asarray(observation['bbox_xyxy'], dtype=np.float32).copy()
+            center = (bbox[:2] + bbox[2:]) / 2
+            size = max(bbox[2:] - bbox[:2])
+            inst = HandInstance(
+                frame_idx=index, img_path=frame['img_path'], hand_side=side,
+                bbox=bbox, bbox_square=np.array([*center, size, size], dtype=np.float32),
+                keypoints=np.asarray(observation['vitpose_keypoints_2d'], dtype=np.float32).copy(),
+                observation_meta={'frontend': 'observations', **deepcopy(observation)},
+            )
+            instances.append(inst)
+            by_key[key] = inst
+            previous = last_by_track.get(track)
+            # HaWoR must not cross missing frames, fragments, or crop-flip changes.
+            if (previous is None or previous[0] != index - 1
+                    or previous[1] != fragment or previous[2] != side):
+                segment = []
+                segments.append(segment)
+            else:
+                segment = previous[3]
+            segment.append(inst)
+            last_by_track[track] = (index, fragment, side, segment)
+    # The frame folder itself owns its focal override.  Using its parent would
+    # make every sequence under test_data/images share one est_focal.txt.
+    focal = _resolve_hawor_focal(args, img_paths[0].parent) if backend_name == 'hawor' else None
+    return Pass3Inputs(
+        img_paths=img_paths, image_size=image.shape[:2], instances=instances,
+        instances_by_key=by_key, segments_by_hand={'left': [], 'right': []},
+        img_focal=focal, temporal_segments=segments,
+    )
+
+
 def _collect_inputs(raw_data, args, backend_name):
     """Build Pass3Inputs from cleaned bbox data."""
     if not raw_data:
         return Pass3Inputs(img_paths=[], image_size=(0, 0), instances=[],
                            instances_by_key={}, segments_by_hand={'left': [], 'right': []})
+    if any('selected_for_hamer' in frame for frame in raw_data):
+        if not all('selected_for_hamer' in frame for frame in raw_data):
+            raise ValueError('Cannot mix observation and legacy frontend frames')
+        return _collect_observation_inputs(raw_data, args, backend_name)
     img_paths = [Path(frame['img_path']) for frame in raw_data]
     first_img = cv2.imread(str(img_paths[0]))
     h, w = first_img.shape[:2]
@@ -99,7 +152,7 @@ def _collect_inputs(raw_data, args, backend_name):
         segments_by_hand[hand_side].append(cur)
 
     img_focal = _resolve_hawor_focal(
-        args, Path(raw_data[0]['img_path']).parent.parent if raw_data else None
+        args, Path(raw_data[0]['img_path']).parent if raw_data else None
     ) if backend_name == 'hawor' else None
     return Pass3Inputs(
         img_paths=img_paths,
@@ -125,8 +178,9 @@ def _assemble_results(raw_outputs, cleaned_data):
         img_path = frame_data['img_path']
         frame_outputs = by_frame.get(img_path, [])
         mano_list, cam_list, tracked_ids, extra_data, backend_meta = [], [], [], [], []
-        for fo in sorted(frame_outputs, key=lambda x: x.hand_side):
-            tracked_id = 1 if fo.hand_side == 'right' else 0
+        for fo in sorted(frame_outputs, key=lambda x: x.raw_backend_meta.get(
+                'physical_track_id', 1 if x.hand_side == 'right' else 0)):
+            tracked_id = fo.raw_backend_meta.get('physical_track_id', 1 if fo.hand_side == 'right' else 0)
             mano_list.append(fo.mano_params)
             cam_list.append(fo.cam_trans)
             tracked_ids.append(tracked_id)
@@ -142,6 +196,12 @@ def _assemble_results(raw_outputs, cleaned_data):
             'shot': 0,
             'backend_meta': backend_meta,
         }
+        if 'selected_for_hamer' in frame_data:
+            results_dict[img_path]['track_id_semantics'] = 'anonymous_physical_slot'
+            results_dict[img_path]['physical_tracks'] = deepcopy(frame_data.get('physical_tracks', []))
+            for field in ('frame_idx', 'timestamp_ns', 'time_s'):
+                if field in frame_data:
+                    results_dict[img_path][field] = frame_data[field]
     return results_dict
 
 
@@ -162,7 +222,11 @@ def _render_results(raw_outputs, cleaned_data, renderer, args, out_dir, fps, lef
         img_cv2 = cv2.imread(img_path)
         img_fn = os.path.splitext(os.path.basename(img_path))[0]
         frame_outputs = by_frame.get(img_path, [])
-        if not args.render or len(frame_outputs) == 0:
+        if not args.render:
+            continue
+        if not frame_outputs:
+            # Keep the source timeline even when neither hand is detected.
+            cv2.imwrite(os.path.join(render_dir, f'{img_fn}.jpg'), img_cv2)
             continue
         all_verts, cam_list, render_is_right = [], [], []
         for fo in sorted(frame_outputs, key=lambda x: x.hand_side):
@@ -238,9 +302,14 @@ def run_mesh_recovery(cleaned_data, backend_bundle, renderer, args, out_dir, fps
         raise ValueError('run_mesh_recovery requires an explicit device')
 
     inputs = _collect_inputs(cleaned_data, args, backend_name)
+    if backend_name == 'hawor' and inputs.img_focal is not None:
+        # Keep projection, camera translation recovery, and overlay rendering on
+        # the same per-sequence focal, including est_focal.txt overrides.
+        renderer.focal_length = inputs.img_focal
     if not inputs.instances:
-        print("No hand instances to reconstruct, skipping Pass 3.")
-        return {}
+        print("No hand instances; preserving empty results and the full video timeline.")
+        _render_results([], cleaned_data, renderer, args, out_dir, fps, None, backend_bundle)
+        return _assemble_results([], cleaned_data)
     runner = build_runner(backend_bundle, args, device)
     left_policy = build_left_hand_policy(device=device)
     raw_outputs = runner.infer(inputs)

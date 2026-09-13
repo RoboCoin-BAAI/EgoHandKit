@@ -12,6 +12,7 @@ class HandInstance:
     bbox: np.ndarray
     bbox_square: np.ndarray
     keypoints: Any = None
+    observation_meta: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -22,6 +23,7 @@ class Pass3Inputs:
     instances_by_key: dict[tuple[int, str], HandInstance]
     segments_by_hand: dict[str, list[list[int]]]
     img_focal: float | None = None
+    temporal_segments: list[list[HandInstance]] | None = None
 
 
 @dataclass

@@ -4,8 +4,8 @@
 
 **EgoHandKit** is a toolkit for hand mesh recovery and world-space
 MANO reconstruction. It takes an image folder or video, detects hands, runs a
-selected HMR backend, recovers per-frame VGGT-Omega cameras, and derives MANO meshes
-in the estimated world coordinate system.
+selected HMR backend, and renders camera-space hand overlays. VGGT-Omega camera
+recovery and world-space MANO derivation are optional via `--omega_world`.
 
 The project is centered on **`run.py`** and is designed for egocentric or
 hand-centric videos where both image-space overlays and world-space hand
@@ -16,12 +16,18 @@ Input can be either:
 - an image folder, or
 - a video file
 
-The pipeline runs in 4 passes:
+The legacy pipeline has three default passes and an optional fourth:
 
 1. **Detection** — YOLO hand detection, optionally merged with Detectron2 + ViTPose
 2. **Cleaning** — temporal bbox cleanup and handedness correction
 3. **Mesh Recovery** — run one backend: `hamer`, `htm`, `wilor`, or `hawor`
-4. **Omega World Derivation** — recover per-frame Omega cameras and derive MANO world-space results
+4. **Optional Omega World Derivation** — recover per-frame Omega cameras and derive MANO world-space results
+
+`--frontend observations` replaces detection selection and cleaning with
+all-person ViTPose candidates, same-frame consolidation and offline physical-hand
+association. It preserves original bbox/keypoints/handedness and missing frames.
+See [Observation Frontend](observation_frontend/README.md) for migration details,
+limitations, caching and physical track ID semantics.
 
 ## Prepare
 
@@ -67,8 +73,8 @@ Asset sources:
 | `hamer_ckpts/checkpoints/texture_supervised_hamer_weights.ckpt` | `--backend htm` | [Hand Texture Module](https://github.com/gkarv/Hand-Texture-Module) |
 | `wilor_ckpts/wilor_final.ckpt` + `wilor_ckpts/model_config.yaml` | `--backend wilor` | [WiLoR](https://github.com/rolpotamias/WiLoR) |
 | `hawor_ckpts/checkpoints/hawor.ckpt` + `hawor_ckpts/checkpoints/infiller.pt` + `hawor_ckpts/model_config.yaml` | `--backend hawor` | [HaWoR](https://github.com/ThunderVVV/HaWoR/) |
-| `vggt_omega/vggt_omega_1b_512.pt` | default Omega camera and world derivation | [VGGT-Omega](https://github.com/facebookresearch/vggt-omega) |
-| `vitpose_ckpts/configs/ViTPose_huge_wholebody_256x192.py` + `vitpose_ckpts/vitpose+_huge/wholebody.pth` | optional `--use_vitpose` detector merge | [ViTPose](https://github.com/ViTAE-Transformer/ViTPose) |
+| `vggt_omega/vggt_omega_1b_512.pt` | optional `--omega_world` | [VGGT-Omega](https://github.com/facebookresearch/vggt-omega) |
+| `vitpose_ckpts/configs/ViTPose_huge_wholebody_256x192.py` + `vitpose_ckpts/vitpose+_huge/wholebody.pth` | `--use_vitpose` or `--frontend observations` | [ViTPose](https://github.com/ViTAE-Transformer/ViTPose) |
 
 ## Installation
 
@@ -77,12 +83,18 @@ The pip requirements are collected in `requirements.txt`, recommended setup:
 ```bash
 conda create -n egohandkit python=3.10 -y
 conda activate egohandkit
-pip install -U pip
-pip install -r requirements.txt
+python -m pip install pip==25.3 setuptools==69.5.1 wheel==0.45.1 Cython==0.29.37
+python -m pip install numpy==1.26.1 scipy==1.14.1 ninja==1.11.1.4
+python -m pip install torch==2.7.1 torchvision==0.22.1 --index-url https://download.pytorch.org/whl/cu128
+python -m pip install --no-build-isolation -r requirements.txt
 ```
 
 Notes:
 
+- Install PyTorch and the build prerequisites first: Detectron2 imports PyTorch
+  during its build, and the legacy packages need the existing environment.
+- See [ENVIRONMENT.md](ENVIRONMENT.md) for this machine's verified CUDA 12.6
+  setup, activation commands, asset locations, and validation results.
 - `requirements.txt` defaults to the CUDA 12.8 PyTorch wheel index
   (`torch==2.7.1`, `torchvision==0.22.1`). If your CUDA version is different,
   install the matching PyTorch stack first or adjust the PyTorch lines in
@@ -100,8 +112,17 @@ python run.py --input test_data/images/disk --backend hawor --gpu 0
 # Video file input (frames are auto-extracted)
 python run.py --input assets/disk.mp4 --backend wilor --gpu 0
 
+# Dataset video input (session + camera are included in the cache/output name)
+python run.py --input /path/to/session/videos/left.mp4 --backend hawor --gpu 0
+
 # Enable YOLO + Detectron2 + ViTPose merge
 python run.py --input test_data/images/disk --backend hamer --use_vitpose
+
+# All-person observation selection; no legacy bbox interpolation or label repair
+python run.py --input test_data/images/disk --frontend observations --backend hawor --gpu 0
+
+# Explicitly enable the optional camera/world branch
+python run.py --input test_data/images/disk --backend hawor --omega_world --gpu 0
 
 # Switch backend while reusing cached Pass 1 / Pass 2 results
 python run.py --input assets/disk.mp4 --backend htm --gpu 0
@@ -116,17 +137,20 @@ python run.py --input test_data/images/disk --backend hawor --force_detect
 | Argument | Default | Description |
 |---|---|---|
 | `--input` | required | Video file or image folder |
+| `--sequence_name` | auto | Override the sequence name used for frame caches and outputs; dataset videos default to `{session}_{camera}` to avoid collisions such as multiple `left.mp4` files |
 | `--backend` | `hawor` | `hamer`, `htm`, `wilor`, `hawor` |
+| `--frontend` | `legacy` | `legacy` or offline `observations`; the latter uses isolated output/cache directories |
 | `--gpu` | `0` | Physical CUDA GPU index. Sets both `CUDA_VISIBLE_DEVICES` and `EGL_DEVICE_ID` before importing torch, then the process uses remapped `cuda:0`. |
 | `--fps` | `15` | Output FPS for image-folder input |
 | `--render` | `True` | Render mesh overlays |
 | `--force_detect` | `False` | Re-run Pass 1 / Pass 2 even if cache exists |
 | `--no_clean_bbox` | `False` | Skip Pass 2 temporal bbox cleaning and feed raw Pass 1 detections to Pass 3 |
 | `--use_vitpose` | `False` | Merge YOLO with Detectron2 + ViTPose detections |
-| `--batch_size` | `48` | Inference batch size (sequence-level, across all frames) |
+| `--batch_size` | `48` | Cross-frame crop batch size for hamer/htm/wilor; HaWoR uses its own 16-frame inference windows |
 | `--rescale_factor` | auto | Bbox padding factor |
-| `--img_focal` | auto | HaWoR focal: CLI -> `est_focal.txt` -> `600` |
-| `--no_omega_world` | `False` | Disable default Pass 4 Omega camera recovery + world-space MANO derivation |
+| `--img_focal` | auto | HaWoR focal in image pixels: CLI -> `est_focal.txt` beside the input frames -> `600` |
+| `--omega_world` | `False` | Enable optional Pass 4 camera recovery + world-space MANO derivation |
+| `--no_omega_world` | - | Explicitly keep Omega disabled; retained for compatibility |
 | `--omega_checkpoint` | `_DATA/vggt_omega/vggt_omega_1b_512.pt` | Omega checkpoint path |
 | `--omega_image_resolution` | `512` | Omega preprocessing image resolution |
 | `--omega_chunk_size` | `auto` | Omega chunk size for long videos |
@@ -138,17 +162,17 @@ python run.py --input test_data/images/disk --backend hawor --force_detect
 
 - **Backend names are unified**: only `hamer`, `htm`, `wilor`, `hawor`
 - **GPU control is unified** through `run.py --gpu`, by setting `CUDA_VISIBLE_DEVICES` + `EGL_DEVICE_ID` before importing torch, then using remapped `cuda:0` inside the process
-- **Pass 3 batching is sequence-level**: all hand crops across the entire sequence are batched together (up to `--batch_size`), not per-image
+- **Pass 3 batching for hamer/htm/wilor is sequence-level**: hand crops across the sequence are batched together (up to `--batch_size`), not per-image
 - **HaWoR uses its own runner** and focal resolution path
 - **Pass 2 can be bypassed** with `--no_clean_bbox`; Pass 3 then consumes raw Pass 1 detections directly
-- **Pass 4 Omega world output is enabled by default**: `run.py` estimates per-frame Omega cameras, writes `{name}_{backend}_omega_world.pkl`, and renders a fixed-view 2x2 world visualization; use `--no_omega_world` for MANO-only runs
+- **Hand overlays are the default**: Pass 4 runs only with `--omega_world`; otherwise no Omega model is loaded and no new camera/world files are generated
 
 ## Input / Output
 
 ### Input
 
 - **Video file**: `.mp4`, `.avi`, `.mov`, `.mkv`, `.webm`
-  - frames are extracted to `test_data/images/{name}/`
+  - frames are extracted to `test_data/images/{name}/`; videos under a `videos/` directory use `{session}_{camera}` as `{name}`
   - output video uses the source video's native FPS
 - **Image folder**
   - images are loaded directly
@@ -162,7 +186,7 @@ Outputs are written to:
 test_data/hand_proc/{name}/
 ```
 
-Typical contents:
+Typical legacy contents (Omega files appear only with `--omega_world`):
 
 ```text
 pass1_raw.pkl
@@ -178,7 +202,12 @@ omega_world_grid_{backend}.mp4
 
 ## Caching
 
-Pass 1 and Pass 2 are cached:
+Observation mode instead uses `test_data/hand_proc/{name}_observations/`, with
+`observations_raw.pkl`, `observations_selected.pkl` and an inspectable
+`observation_selection.json`. Its signature guards against stale input, model
+configuration and selector code. Legacy results are not overwritten.
+
+Legacy Pass 1 and Pass 2 are cached:
 
 - switching `--backend` normally only re-runs Pass 3 and the backend-specific world pkl
 - `omega_camera.npz` is reused across backends unless `--omega_force` is set

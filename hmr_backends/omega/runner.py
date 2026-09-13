@@ -4,6 +4,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from tqdm import tqdm
 
 from hmr_backends.omega.alignment import align_points_umeyama, c2w_to_w2c, transform_c2w_by_similarity
 from hmr_backends.omega.camera_cache import (
@@ -23,11 +24,14 @@ DEFAULT_AUTO_CHUNK_SIZE = 500
 
 
 def resolve_chunk_size(chunk_size: str | int, num_frames: int) -> int:
-    if isinstance(chunk_size, str):
-        if chunk_size != "auto":
-            raise ValueError(f"--omega_chunk_size must be 'auto' or a positive integer, got {chunk_size!r}")
+    if chunk_size == "auto":
         return min(num_frames, DEFAULT_AUTO_CHUNK_SIZE)
-    value = int(chunk_size)
+    try:
+        value = int(chunk_size)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"--omega_chunk_size must be 'auto' or a positive integer, got {chunk_size!r}"
+        ) from exc
     if value <= 0:
         raise ValueError(f"--omega_chunk_size must be positive, got {value}")
     return min(num_frames, value)
@@ -108,9 +112,9 @@ def run_omega_camera_recovery(
     if not image_paths:
         raise ValueError("Omega Pass 4 received no image paths")
     device = device or torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    model = load_omega_model(checkpoint_path, device)
     resolved_chunk_size = resolve_chunk_size(chunk_size, len(image_paths))
     chunks = build_chunks(len(image_paths), resolved_chunk_size, overlap)
+    model = load_omega_model(checkpoint_path, device)
 
     full_extrinsic = [None] * len(image_paths)
     full_intrinsic = [None] * len(image_paths)
@@ -119,7 +123,7 @@ def run_omega_camera_recovery(
     alignment_meta = []
     global_c2w = None
 
-    for chunk_idx, (start, end) in enumerate(chunks):
+    for chunk_idx, (start, end) in enumerate(tqdm(chunks, desc="Omega camera chunks")):
         chunk_paths = image_paths[start:end]
         extrinsic, intrinsic, preprocess_meta = infer_omega_chunk(
             model,

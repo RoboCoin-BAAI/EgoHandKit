@@ -17,12 +17,12 @@ Primary outputs are written under test_data/hand_proc/{sequence_name}/:
 - render_{backend}.mp4: original-camera mesh overlay video.
 - omega_world_grid_{backend}.mp4: 2x2 fixed-view world visualization.
 
-Omega world recovery and visualization are enabled by default. Use
---no_omega_world or --no_omega_world_vis for faster MANO-only/debug runs.
+Hand overlays are the default. Use --omega_world to opt into world recovery.
 """
 
 from pathlib import Path
 import argparse
+import gc
 import os
 import sys
 
@@ -74,6 +74,7 @@ from bbox_utils import (
     merge_detections,
     clean_bbox_sequences,
 )
+from input_naming import sequence_name_for_input
 
 
 VIDEO_EXTS = {'.mp4', '.avi', '.mov', '.mkv', '.webm'}
@@ -117,8 +118,14 @@ def build_arg_parser():
     )
     parser.add_argument('--input', type=str, required=True,
                         help='Path to input video file or image folder')
+    parser.add_argument('--sequence_name', type=str, default=None,
+                        help='Output/cache sequence name. Defaults to session_camera for dataset videos')
     parser.add_argument('--backend', type=str, default='hawor', choices=['hamer', 'htm', 'wilor', 'hawor'],
                         help='Backend model to use (hamer, htm, wilor, or hawor)')
+    parser.add_argument('--frontend', choices=['legacy', 'observations'], default='legacy',
+                        help='Legacy YOLO/cleanup or all-person ViTPose observation selection (offline)')
+    parser.add_argument('--output_root', type=str, default='test_data/hand_proc',
+                        help='Root directory for outputs. Default: test_data/hand_proc')
     parser.add_argument('--fps', type=int, default=15,
                         help='FPS for output visualization videos (only used for image folder input; video input auto-uses native FPS)')
     parser.add_argument('--render', dest='render', action='store_true', default=True,
@@ -140,8 +147,11 @@ def build_arg_parser():
                         help='Image focal length for HaWoR backend; if omitted follow HaWoR logic: est_focal.txt then default 600')
     parser.add_argument('--gpu', type=int, default=0,
                         help='Physical CUDA GPU index to use when CUDA is available (0-based). This is applied before importing torch by setting CUDA_VISIBLE_DEVICES.')
-    parser.add_argument('--no_omega_world', dest='omega_world', action='store_false', default=True,
-                        help='Disable default Pass 4 Omega camera recovery and world-space MANO derivation')
+    omega_mode = parser.add_mutually_exclusive_group()
+    omega_mode.add_argument('--omega_world', action='store_true', default=False,
+                           help='Opt into Omega camera recovery and world-space MANO derivation')
+    omega_mode.add_argument('--no_omega_world', dest='omega_world', action='store_false',
+                           help='Disable Omega (already the default)')
     parser.add_argument('--omega_checkpoint', type=str, default='./_DATA/vggt_omega/vggt_omega_1b_512.pt',
                         help='Path to Omega checkpoint')
     parser.add_argument('--omega_image_resolution', type=int, default=512,
@@ -160,21 +170,26 @@ def build_arg_parser():
 def main():
     parser = build_arg_parser()
     args = parser.parse_args()
+    if args.frontend == 'observations' and (args.use_vitpose or args.no_clean_bbox):
+        parser.error('--frontend observations replaces legacy detection/cleanup; omit --use_vitpose and --no_clean_bbox')
+    if args.fps <= 0:
+        parser.error('--fps must be positive')
 
     input_path = Path(args.input)
     if input_path.is_file() and input_path.suffix.lower() in VIDEO_EXTS:
-        video_name = input_path.stem
+        video_name = sequence_name_for_input(input_path, args.sequence_name)
         img_folder = Path('test_data/images') / video_name
         native_fps = extract_video_frames(input_path, img_folder)
         fps = native_fps
     elif input_path.is_dir():
-        video_name = input_path.name
+        video_name = sequence_name_for_input(input_path, args.sequence_name)
         img_folder = input_path
         fps = args.fps
     else:
         raise ValueError(f"--input must be a video file ({', '.join(VIDEO_EXTS)}) or image folder: {input_path}")
 
-    out_dir = Path('test_data/hand_proc') / video_name
+    output_name = video_name if args.frontend == 'legacy' else f'{video_name}_observations'
+    out_dir = Path(args.output_root) / output_name
     out_dir.mkdir(parents=True, exist_ok=True)
     res_path = out_dir / f'{video_name}_{args.backend}.pkl'
 
@@ -205,13 +220,9 @@ def main():
         raise ValueError(f"No images found in {img_folder} matching {args.file_type}")
 
     repo_root = os.path.dirname(os.path.abspath(__file__))
-    backend_bundle = load_backend(args.backend, repo_root, args)
-    model = backend_bundle.model.to(device)
-    model.eval()
-
     pass1_cache = out_dir / 'pass1_raw.pkl'
     pass2_cache = out_dir / 'pass2_cleaned.pkl'
-    need_detect = args.force_detect or not pass1_cache.exists()
+    need_detect = args.frontend == 'legacy' and (args.force_detect or not pass1_cache.exists())
 
     yolo_detector = None
     body_detector = None
@@ -236,9 +247,13 @@ def main():
             from vitpose_model import ViTPoseModel
             vitpose = ViTPoseModel(repo_root, device)
 
-    renderer = Renderer(backend_bundle.render_cfg, faces=model.mano.faces)
+    if args.frontend == 'observations':
+        from observation_frontend.adapter import run_observation_frontend
 
-    if pass1_cache.exists() and not args.force_detect:
+        cleaned_data = run_observation_frontend(
+            img_paths, out_dir, repo_root, device, fps=fps, force=args.force_detect,
+        )
+    elif pass1_cache.exists() and not args.force_detect:
         print(f"\nLoading cached Pass 1 results from {pass1_cache}")
         with open(pass1_cache, 'rb') as f:
             raw_data = pickle.load(f)
@@ -255,16 +270,23 @@ def main():
             pickle.dump(raw_data, f)
         print(f"Pass 1 cached to {pass1_cache}")
 
-    pass2_vis_dir = str(out_dir) if args.render else None
-    cleaned_data = load_or_build_cleaned_bboxes(
-        raw_data,
-        pass2_cache,
-        force_detect=args.force_detect,
-        no_clean_bbox=args.no_clean_bbox,
-        clean_fn=clean_bbox_sequences,
-        vis_dir=pass2_vis_dir,
-        fps=fps,
-    )
+    if args.frontend == 'legacy':
+        pass2_vis_dir = str(out_dir) if args.render else None
+        cleaned_data = load_or_build_cleaned_bboxes(
+            raw_data, pass2_cache, force_detect=args.force_detect,
+            no_clean_bbox=args.no_clean_bbox, clean_fn=clean_bbox_sequences,
+            vis_dir=pass2_vis_dir, fps=fps,
+        )
+
+    # Frontend models are no longer needed while reconstructing hand crops.
+    del yolo_detector, body_detector, vitpose
+    gc.collect()
+    if device.type == 'cuda':
+        torch.cuda.empty_cache()
+    backend_bundle = load_backend(args.backend, repo_root, args)
+    model = backend_bundle.model.to(device)
+    model.eval()
+    renderer = Renderer(backend_bundle.render_cfg, faces=model.mano.faces)
 
     # Pass 3 - MESH RECOVERY
     results = run_mesh_recovery(cleaned_data, backend_bundle, renderer, args, out_dir=out_dir, fps=fps, device=device)
@@ -316,7 +338,7 @@ def main():
         elif not args.omega_world_vis:
             print("Omega world fixed-view visualization skipped by --no_omega_world_vis")
     else:
-        print("\nPass 4 - OMEGA WORLD: skipped by --no_omega_world")
+        print("\nPass 4 - OMEGA WORLD: disabled (use --omega_world to enable)")
 
 
 if __name__ == '__main__':

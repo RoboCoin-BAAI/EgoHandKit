@@ -108,6 +108,9 @@ class BatchBackendRunner(BaseBackendRunner):
                     cam_trans=pred_cam_t_full[n],
                     pred_vertices=out['pred_vertices'][n].detach().cpu().numpy(),
                     pred_keypoints_2d=all_pred_2d[n],
-                    raw_backend_meta={'backend': self.backend_name, 'is_right': is_right_val},
+                    raw_backend_meta={
+                        'backend': self.backend_name, 'is_right': is_right_val,
+                        **inst.observation_meta,
+                    },
                 ))
         return outputs
