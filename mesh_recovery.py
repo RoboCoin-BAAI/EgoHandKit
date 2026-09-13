@@ -55,7 +55,10 @@ def _collect_observation_inputs(frames, args, backend_name):
     instances, segments, by_key, last_by_track = [], [], {}, {}
     for frame in frames:
         for observation in frame['selected_for_hamer']:
-            side = observation['handedness']
+            # ViTPose handedness is retained in metadata, but HaWoR needs a
+            # stable crop flip for an entire physical track.  The frontend
+            # supplies a track-level side that is robust to transient flips.
+            side = observation.get('backend_handedness', observation['handedness'])
             if side not in ('left', 'right'):
                 raise ValueError(f'Unsupported original handedness: {side}')
             track = int(observation['physical_track_id'])

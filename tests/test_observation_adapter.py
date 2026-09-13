@@ -100,6 +100,18 @@ def test_track_side_gap_and_fragment_boundaries_preserve_observations(tmp_path):
     assert frames == original
 
 
+def test_backend_side_stabilizes_transient_frontend_flip(tmp_path):
+    frames = make_frames(tmp_path, [
+        [observation(side='right')],
+        [dict(observation(side='left'), backend_handedness='right')],
+        [observation(side='right')],
+    ])
+    inputs = _collect_inputs(frames, SimpleNamespace(img_focal=550), 'hawor')
+    assert [[inst.frame_idx for inst in segment] for segment in inputs.temporal_segments] == [[0, 1, 2]]
+    assert [inst.hand_side for inst in inputs.temporal_segments[0]] == ['right'] * 3
+    assert [inst.observation_meta['handedness'] for inst in inputs.temporal_segments[0]] == ['right', 'left', 'right']
+
+
 def test_hawor_inference_keeps_two_same_side_hands_and_physical_ids(tmp_path):
     frames = make_frames(tmp_path, [[observation(), observation(1, candidate=1)],
                                     [observation(side='right')], []])

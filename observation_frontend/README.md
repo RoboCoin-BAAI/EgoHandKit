@@ -37,13 +37,15 @@ and original handedness are retained without correction or averaging.
 
 The selected raw bbox goes through the target backend's original crop rules,
 including padding, resizing, normalization and left-hand flipping. There is no
-new crop algorithm. In particular, selection's dominant handedness diagnostic
-does not change crop flipping or MANO handedness.
+new crop algorithm. The selected record also carries `backend_handedness`, a
+track-level anatomical side used only by the HMR adapter to keep crop flipping
+stable when ViTPose flickers for an isolated frame. Raw `handedness` remains in
+the observation metadata for diagnostics.
 
 Physical track slots are anonymous, not anatomical left/right identities. Two
 selected observations can have the same original handedness and must both
 survive. HaWoR inference is split at a missing frame, a fragment change, or a
-change of original handedness. It never concatenates different physical hands
+change of backend handedness. It never concatenates different physical hands
 solely because their side labels match. This necessary temporal adaptation is
 not evidence that HaWoR reproduces the source HaMeR results.
 

@@ -108,6 +108,9 @@ def select_pre_hamer_observations(
     association_by_frame = {
         int(frame["frame_idx"]): frame for frame in association["frames"]
     }
+    statistics_by_track = {
+        int(stat["track_id"]): stat for stat in association["track_statistics"]
+    }
     output_frames: list[dict[str, Any]] = []
     hamer_input_count = 0
     for frame in consolidated_frames:
@@ -132,6 +135,20 @@ def select_pre_hamer_observations(
                     "dominant_track_handedness": track["dominant_track_handedness"],
                 }
             )
+            # The detector's anatomical-side label can flicker for a frame or
+            # two.  Keep that raw hypothesis for diagnostics, but provide the
+            # backend with the track-level side so a transient flip does not
+            # restart HaWoR's temporal window.
+            stat = statistics_by_track[int(track["track_id"])]
+            observed_count = int(stat["observed_frames"])
+            dominant_count = max(
+                int(stat["vitpose_left_count"]), int(stat["vitpose_right_count"])
+            )
+            side_is_stable = (
+                observed_count > 0 and dominant_count / observed_count >= 0.85
+            )
+            if side_is_stable and track["dominant_track_handedness"] in ("left", "right"):
+                selected["backend_handedness"] = track["dominant_track_handedness"]
             selected_for_hamer.append(selected)
         selected_for_hamer.sort(key=lambda item: int(item["physical_track_id"]))
         hamer_input_count += len(selected_for_hamer)
