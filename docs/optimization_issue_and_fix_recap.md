@@ -146,6 +146,17 @@ Observations + DP + handedness stabilization
 Observations + velocity-aware association
 ```
 
+## 7. 已开始实现的下一阶段
+
+association 模块已经加入两帧恒速预测先验：使用最近两条 observation 的
+bbox center 和关键点位移，计算当前候选相对预测位置的 residual，并将其
+作为 soft association cost。DP 的状态键保持紧凑，历史 observation 只存放
+在 DP 节点中，避免因为保存完整历史导致状态数量爆炸。
+
+该项通过 `motion_prediction_weight` 控制，当前默认值为 `0.0`。在目标样本
+上试验较大的权重会把真实的大位移候选误判为异常，因此暂时不默认开启，需
+先通过不同动作类型的 ablation 调参后再启用。
+
 ## 6. 世界坐标视频说明
 
 本次修复后只重新生成了相机坐标系的 HMR overlay。原来的：
