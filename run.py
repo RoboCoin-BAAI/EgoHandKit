@@ -138,6 +138,15 @@ def build_arg_parser():
                         help='Run full-image YOLO as a diagnostic comparison; never replaces MINT observations')
     parser.add_argument('--mint_yolo_iou_threshold', type=float, default=0.1,
                         help='IoU threshold used by --mint_yolo_check')
+    parser.add_argument('--mint_yolo_gate', action='store_true', default=False,
+                        help='Verify each MINT ROI with YOLO and reject unsupported observations')
+    parser.add_argument('--mint_yolo_roi_scale', type=float, default=1.5)
+    parser.add_argument('--mint_yolo_hard_conf', type=float, default=0.20)
+    parser.add_argument('--mint_yolo_strong_conf', type=float, default=0.25)
+    parser.add_argument('--mint_yolo_strong_iou', type=float, default=0.35)
+    parser.add_argument('--mint_yolo_hard_iou', type=float, default=0.10)
+    parser.add_argument('--mint_yolo_anchor_center_threshold', type=float, default=0.15)
+    parser.add_argument('--mint_yolo_gray_grace_frames', type=int, default=3)
     parser.add_argument('--mint_style_smoother', action='store_true', default=False,
                         help='Apply the MINT UKF/RTS MANO smoother after HMR inference')
     parser.add_argument('--mint_smoother_q', type=float, default=0.6,
@@ -252,6 +261,14 @@ def main():
         parser.error('--mint_depth_gate requires --mint_depth_dir')
     if args.mint_motion_gate and args.frontend != 'mint':
         parser.error('--mint_motion_gate currently requires --frontend mint')
+    if args.mint_yolo_gate and args.frontend != 'mint':
+        parser.error('--mint_yolo_gate currently requires --frontend mint')
+    if args.mint_yolo_roi_scale <= 0 or not 0 <= args.mint_yolo_hard_conf <= args.mint_yolo_strong_conf:
+        parser.error('--mint_yolo_roi_scale must be positive and confidence thresholds must be ordered')
+    if not 0 <= args.mint_yolo_hard_iou <= args.mint_yolo_strong_iou <= 1:
+        parser.error('YOLO IoU thresholds must satisfy 0 <= hard_iou <= strong_iou <= 1')
+    if args.mint_yolo_anchor_center_threshold <= 0 or args.mint_yolo_gray_grace_frames < 0:
+        parser.error('YOLO anchor threshold must be positive and gray grace frames non-negative')
     if args.mint_motion_center_threshold <= 0 or args.mint_motion_size_ratio < 1:
         parser.error('--mint_motion_center_threshold must be positive and --mint_motion_size_ratio must be >= 1')
     if not 0 <= args.mint_motion_iou_threshold <= 1 or args.mint_motion_joint_threshold <= 0:
@@ -364,6 +381,7 @@ def main():
         )
         from observation_frontend.depth_gate import apply_depth_gate
         from observation_frontend.motion_gate import apply_motion_gate
+        from observation_frontend.yolo_gate import apply_yolo_gate
         mint_cache = Path(args.mint_predictions)
         if not mint_cache.is_file():
             raise FileNotFoundError(f"MINT prediction cache does not exist: {mint_cache}")
@@ -392,6 +410,15 @@ def main():
             'motion_joint_threshold': float(args.mint_motion_joint_threshold),
             'motion_min_votes': int(args.mint_motion_min_votes),
             'motion_reacquire_frames': int(args.mint_motion_reacquire_frames),
+            'yolo_gate': bool(args.mint_yolo_gate),
+            'yolo_model': str(Path(args.yolo_model).resolve()) if args.mint_yolo_gate else None,
+            'yolo_roi_scale': float(args.mint_yolo_roi_scale),
+            'yolo_hard_conf': float(args.mint_yolo_hard_conf),
+            'yolo_strong_conf': float(args.mint_yolo_strong_conf),
+            'yolo_strong_iou': float(args.mint_yolo_strong_iou),
+            'yolo_hard_iou': float(args.mint_yolo_hard_iou),
+            'yolo_anchor_center_threshold': float(args.mint_yolo_anchor_center_threshold),
+            'yolo_gray_grace_frames': int(args.mint_yolo_gray_grace_frames),
         }
         if observation_cache.exists() and not args.force_detect:
             cleaned_data = load_mint_observation_cache(
@@ -418,6 +445,24 @@ def main():
                 (out_dir / 'mint_depth_gate.json').write_text(
                     json.dumps(depth_report, indent=2) + '\n')
                 print(f"Depth gate rejected {depth_report['rejected_observations']} observations")
+            if args.mint_yolo_gate:
+                if yolo_detector is None:
+                    print(f"\nLoading YOLO hand detector for MINT ROI gate: {args.yolo_model}")
+                    yolo_detector = YOLO(args.yolo_model)
+                    yolo_detector.to(device)
+                cleaned_data, yolo_gate_report = apply_yolo_gate(
+                    cleaned_data, img_paths, yolo_detector,
+                    roi_scale=args.mint_yolo_roi_scale,
+                    hard_conf_threshold=args.mint_yolo_hard_conf,
+                    strong_conf_threshold=args.mint_yolo_strong_conf,
+                    strong_iou_threshold=args.mint_yolo_strong_iou,
+                    hard_iou_threshold=args.mint_yolo_hard_iou,
+                    anchor_center_threshold=args.mint_yolo_anchor_center_threshold,
+                    gray_grace_frames=args.mint_yolo_gray_grace_frames,
+                )
+                (out_dir / 'mint_yolo_gate.json').write_text(
+                    json.dumps(yolo_gate_report, indent=2) + '\n')
+                print(f"YOLO ROI gate rejected {yolo_gate_report['counts']['rejected']} observations")
             if args.mint_motion_gate:
                 cleaned_data, motion_report = apply_motion_gate(
                     cleaned_data, img_paths,
