@@ -229,45 +229,59 @@ def _smooth_raw_outputs(raw_outputs, backend_bundle, device, args):
     for output in raw_outputs:
         track = output.raw_backend_meta.get(
             'physical_track_id', 1 if output.hand_side == 'right' else 0)
-        grouped.setdefault((int(track), output.hand_side), []).append(output)
-    for (_track, _side), sequence in grouped.items():
+        fragment = output.raw_backend_meta.get('physical_track_fragment_id', 0)
+        grouped.setdefault((int(track), output.hand_side, int(fragment)), []).append(output)
+    for (_track, _side, _fragment), sequence in grouped.items():
         sequence.sort(key=lambda item: item.frame_idx)
-        if len(sequence) < 4:
-            continue
-        values = []
+        # Missing observations are also hard segment boundaries. Without
+        # this split, the post-HMR smoother would interpolate across a frame
+        # where the depth/MINT gate emitted no hand at all.
+        runs, current = [], []
         for output in sequence:
-            params = output.mano_params
-            global_orient = _numpy_value(params['global_orient']).reshape(3, 3)
-            hand_pose = _numpy_value(params['hand_pose']).reshape(15, 3, 3)
-            betas = _numpy_value(params['betas']).reshape(10)
-            values.append(np.concatenate([
-                np.asarray(output.cam_trans, dtype=np.float32).reshape(3),
-                _rotmat_to_6d(global_orient),
-                _rotmat_to_6d(hand_pose).reshape(90),
-                betas,
-            ]))
-        smoothed = smooth_hand_sequence(
-            np.stack(values),
-            np.asarray([item.frame_idx for item in sequence]),
-            q=args.mint_smoother_q,
-            r=args.mint_smoother_r,
-            beta=args.mint_smoother_beta,
-        )
-        for output, value in zip(sequence, smoothed):
-            global_orient = _rotation6d_to_matrix(value[3:9])
-            hand_pose = _rotation6d_to_matrix(value[9:99].reshape(15, 6))
-            params = dict(output.mano_params)
-            params['global_orient'] = global_orient.astype(np.float32)
-            params['hand_pose'] = hand_pose.astype(np.float32)
-            params['betas'] = value[99:109].astype(np.float32)
-            output.mano_params = params
-            output.cam_trans = value[:3].astype(np.float32)
-            output.pred_vertices = _recompute_vertices(
-                backend_bundle.model, params, device)
-            output.raw_backend_meta['mint_style_smoother'] = {
-                'q': float(args.mint_smoother_q), 'r': float(args.mint_smoother_r),
-                'beta': float(args.mint_smoother_beta), 'track_id': int(_track),
-            }
+            if current and output.frame_idx != current[-1].frame_idx + 1:
+                runs.append(current)
+                current = []
+            current.append(output)
+        if current:
+            runs.append(current)
+        for run in runs:
+            if len(run) < 4:
+                continue
+            values = []
+            for output in run:
+                params = output.mano_params
+                global_orient = _numpy_value(params['global_orient']).reshape(3, 3)
+                hand_pose = _numpy_value(params['hand_pose']).reshape(15, 3, 3)
+                betas = _numpy_value(params['betas']).reshape(10)
+                values.append(np.concatenate([
+                    np.asarray(output.cam_trans, dtype=np.float32).reshape(3),
+                    _rotmat_to_6d(global_orient),
+                    _rotmat_to_6d(hand_pose).reshape(90),
+                    betas,
+                ]))
+            smoothed = smooth_hand_sequence(
+                np.stack(values),
+                np.asarray([item.frame_idx for item in run]),
+                q=args.mint_smoother_q,
+                r=args.mint_smoother_r,
+                beta=args.mint_smoother_beta,
+            )
+            for output, value in zip(run, smoothed):
+                global_orient = _rotation6d_to_matrix(value[3:9])
+                hand_pose = _rotation6d_to_matrix(value[9:99].reshape(15, 6))
+                params = dict(output.mano_params)
+                params['global_orient'] = global_orient.astype(np.float32)
+                params['hand_pose'] = hand_pose.astype(np.float32)
+                params['betas'] = value[99:109].astype(np.float32)
+                output.mano_params = params
+                output.cam_trans = value[:3].astype(np.float32)
+                output.pred_vertices = _recompute_vertices(
+                    backend_bundle.model, params, device)
+                output.raw_backend_meta['mint_style_smoother'] = {
+                    'q': float(args.mint_smoother_q), 'r': float(args.mint_smoother_r),
+                    'beta': float(args.mint_smoother_beta), 'track_id': int(_track),
+                    'track_fragment_id': int(_fragment),
+                }
 
 
 def _rotation6d_to_matrix(value):

@@ -76,3 +76,18 @@ then converts rotations back to the backend's MANO matrices and recomputes
 vertices for rendering. Tracks with fewer than four observations are left
 unchanged. This stage is opt-in so the original MINT frontend behavior remains
 reproducible.
+
+## Optional pre-HaMeR depth gate
+
+When `--mint_depth_gate` is enabled, `depth_gate.py` reads the exported
+uint16 millimetre PNG sequence from `--mint_depth_dir`, rescales it to each
+RGB frame if necessary, and computes the median positive depth inside the
+MINT-projected bbox. A sample is rejected when it has no valid depth, falls
+outside the configured absolute range, or jumps outside the configured ratio
+relative to that side's recent valid-depth median. Rejected observations are
+removed before `_collect_observation_inputs()` and before post-HMR smoothing.
+Any rejection increments `physical_track_fragment_id`; the smoother groups by
+that fragment, preventing a bad interval from being interpolated into a valid
+MANO track. The depth report is stored as `mint_depth_gate.json` and included
+in the observation cache configuration, so changing the depth source or
+thresholds cannot silently reuse an old cache.

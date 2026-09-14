@@ -15,12 +15,32 @@ Example:
 python run.py --input /path/to/frames --frontend mint \
   --mint_predictions /path/to/mint_predictions.npz --backend hamer \
   --mint_style_smoother
+
+# Add the optional depth veto (uint16 millimetre PNGs):
+python run.py --input /path/to/frames --frontend mint \
+  --mint_predictions /path/to/mint_predictions.npz --backend hamer \
+  --mint_depth_gate --mint_depth_dir /path/to/depth
 ```
 
 `--mint_style_smoother` is an opt-in UKF + unscented RTS pass applied to
 HaMeR's per-track camera translation, MANO rotations, and shape after HMR
 inference. It is a local port of MINT's representation-safe smoothing logic;
 the MINT repository is not imported at runtime.
+
+## Optional Depth Veto
+
+For sequences with the exported stereo depth, add `--mint_depth_gate
+--mint_depth_dir /path/to/depth`. The adapter reads the uint16 PNG sequence
+under `fast_foundation/depth_uint16_png` (millimetres), takes the median depth
+inside each MINT bbox, and rejects invalid, out-of-range, or abrupt relative
+depth jumps before HaMeR. Defaults are 0.05--4.0 m and a 0.4--2.5 ratio against
+the median of the last ten valid frames. A rejected frame starts a new physical
+track fragment, so the optional MANO smoother cannot bridge across the bad
+interval. Depth is a veto only; it does not choose between MINT and YOLO.
+
+`--mint_yolo_check` remains a diagnostic full-image comparison and does not
+replace MINT bboxes. The resulting `mint_depth_gate.json` and
+`mint_yolo_check.json` are written beside the normal observation cache.
 
 ## Scope
 

@@ -146,6 +146,22 @@ def build_arg_parser():
                         help='MINT-style smoother observation-noise scale')
     parser.add_argument('--mint_smoother_beta', type=float, default=2.0,
                         help='MINT-style speed-adaptive noise scale')
+    parser.add_argument('--mint_depth_gate', action='store_true', default=False,
+                        help='Reject MINT observations with invalid or implausible depth before HaMeR')
+    parser.add_argument('--mint_depth_dir', type=str, default=None,
+                        help='Depth directory containing fast_foundation/depth_uint16_png')
+    parser.add_argument('--mint_depth_min_m', type=float, default=0.05,
+                        help='Absolute minimum valid depth for the MINT depth gate')
+    parser.add_argument('--mint_depth_max_m', type=float, default=4.0,
+                        help='Absolute maximum valid depth for the MINT depth gate')
+    parser.add_argument('--mint_depth_max_ratio', type=float, default=2.5,
+                        help='Maximum current/reference depth ratio')
+    parser.add_argument('--mint_depth_min_ratio', type=float, default=0.4,
+                        help='Minimum current/reference depth ratio')
+    parser.add_argument('--mint_depth_history', type=int, default=10,
+                        help='Number of recent valid depths used as the relative reference')
+    parser.add_argument('--mint_depth_max_bad_frames', type=int, default=2,
+                        help='Consecutive bad-frame budget recorded by the gate; any bad frame starts a new fragment')
     parser.add_argument('--observation_all_person', action='store_true', default=False,
                         help='Observation experiment: run ViTPose on every detected person instead of the highest-score wearer')
     parser.add_argument('--observation_no_consolidation', action='store_true', default=False,
@@ -216,6 +232,10 @@ def main():
         parser.error('--mint_yolo_iou_threshold must lie in [0,1]')
     if args.mint_style_smoother and args.frontend != 'mint':
         parser.error('--mint_style_smoother currently requires --frontend mint')
+    if args.mint_depth_gate and args.frontend != 'mint':
+        parser.error('--mint_depth_gate currently requires --frontend mint')
+    if args.mint_depth_gate and not args.mint_depth_dir:
+        parser.error('--mint_depth_gate requires --mint_depth_dir')
     if args.mint_smoother_q <= 0 or args.mint_smoother_r <= 0 or args.mint_smoother_beta < 0:
         parser.error('--mint_smoother_q/r must be positive and beta must be non-negative')
     if args.fps <= 0:
@@ -320,6 +340,7 @@ def main():
             load_mint_predictions,
             save_mint_observation_cache,
         )
+        from observation_frontend.depth_gate import apply_depth_gate
         mint_cache = Path(args.mint_predictions)
         if not mint_cache.is_file():
             raise FileNotFoundError(f"MINT prediction cache does not exist: {mint_cache}")
@@ -333,6 +354,14 @@ def main():
             'presence_threshold': float(args.mint_presence_threshold),
             'mano_model_dir': str(Path(args.mint_mano_model_dir).resolve()) if args.mint_mano_model_dir else None,
             'projection': 'camera_frame_opencv_to_original_pixels_v1',
+            'depth_gate': bool(args.mint_depth_gate),
+            'depth_dir': str(Path(args.mint_depth_dir).resolve()) if args.mint_depth_dir else None,
+            'depth_min_m': float(args.mint_depth_min_m),
+            'depth_max_m': float(args.mint_depth_max_m),
+            'depth_max_ratio': float(args.mint_depth_max_ratio),
+            'depth_min_ratio': float(args.mint_depth_min_ratio),
+            'depth_history': int(args.mint_depth_history),
+            'depth_max_bad_frames': int(args.mint_depth_max_bad_frames),
         }
         if observation_cache.exists() and not args.force_detect:
             cleaned_data = load_mint_observation_cache(
@@ -346,6 +375,19 @@ def main():
                 presence_threshold=args.mint_presence_threshold,
                 mano_model_dir=args.mint_mano_model_dir,
             )
+            if args.mint_depth_gate:
+                cleaned_data, depth_report = apply_depth_gate(
+                    cleaned_data, img_paths, args.mint_depth_dir,
+                    min_depth_m=args.mint_depth_min_m,
+                    max_depth_m=args.mint_depth_max_m,
+                    max_ratio=args.mint_depth_max_ratio,
+                    min_ratio=args.mint_depth_min_ratio,
+                    history_size=args.mint_depth_history,
+                    max_bad_frames=args.mint_depth_max_bad_frames,
+                )
+                (out_dir / 'mint_depth_gate.json').write_text(
+                    json.dumps(depth_report, indent=2) + '\n')
+                print(f"Depth gate rejected {depth_report['rejected_observations']} observations")
             save_mint_observation_cache(
                 observation_cache, cleaned_data,
                 image_paths=img_paths, mint_path=mint_cache, config=mint_config)
