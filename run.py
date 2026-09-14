@@ -162,6 +162,20 @@ def build_arg_parser():
                         help='Number of recent valid depths used as the relative reference')
     parser.add_argument('--mint_depth_max_bad_frames', type=int, default=2,
                         help='Consecutive bad-frame budget recorded by the gate; any bad frame starts a new fragment')
+    parser.add_argument('--mint_motion_gate', action='store_true', default=False,
+                        help='Reject implausible image-space jumps before HaMeR')
+    parser.add_argument('--mint_motion_center_threshold', type=float, default=0.25,
+                        help='Maximum bbox-center jump as a fraction of image diagonal')
+    parser.add_argument('--mint_motion_size_ratio', type=float, default=2.0,
+                        help='Maximum bbox area ratio for a motion-gate vote')
+    parser.add_argument('--mint_motion_iou_threshold', type=float, default=0.1,
+                        help='Minimum bbox IoU for a motion-gate vote')
+    parser.add_argument('--mint_motion_joint_threshold', type=float, default=0.25,
+                        help='Maximum projected-joint jump as a fraction of image diagonal')
+    parser.add_argument('--mint_motion_min_votes', type=int, default=2,
+                        help='Number of failed motion tests required to reject a sample')
+    parser.add_argument('--mint_motion_reacquire_frames', type=int, default=2,
+                        help='Lookahead frames used to classify a persistent jump')
     parser.add_argument('--observation_all_person', action='store_true', default=False,
                         help='Observation experiment: run ViTPose on every detected person instead of the highest-score wearer')
     parser.add_argument('--observation_no_consolidation', action='store_true', default=False,
@@ -236,6 +250,14 @@ def main():
         parser.error('--mint_depth_gate currently requires --frontend mint')
     if args.mint_depth_gate and not args.mint_depth_dir:
         parser.error('--mint_depth_gate requires --mint_depth_dir')
+    if args.mint_motion_gate and args.frontend != 'mint':
+        parser.error('--mint_motion_gate currently requires --frontend mint')
+    if args.mint_motion_center_threshold <= 0 or args.mint_motion_size_ratio < 1:
+        parser.error('--mint_motion_center_threshold must be positive and --mint_motion_size_ratio must be >= 1')
+    if not 0 <= args.mint_motion_iou_threshold <= 1 or args.mint_motion_joint_threshold <= 0:
+        parser.error('--mint_motion_iou_threshold must lie in [0,1] and joint threshold must be positive')
+    if not 1 <= args.mint_motion_min_votes <= 4 or args.mint_motion_reacquire_frames < 1:
+        parser.error('--mint_motion_min_votes must be 1..4 and reacquire frames must be positive')
     if args.mint_smoother_q <= 0 or args.mint_smoother_r <= 0 or args.mint_smoother_beta < 0:
         parser.error('--mint_smoother_q/r must be positive and beta must be non-negative')
     if args.fps <= 0:
@@ -341,6 +363,7 @@ def main():
             save_mint_observation_cache,
         )
         from observation_frontend.depth_gate import apply_depth_gate
+        from observation_frontend.motion_gate import apply_motion_gate
         mint_cache = Path(args.mint_predictions)
         if not mint_cache.is_file():
             raise FileNotFoundError(f"MINT prediction cache does not exist: {mint_cache}")
@@ -362,6 +385,13 @@ def main():
             'depth_min_ratio': float(args.mint_depth_min_ratio),
             'depth_history': int(args.mint_depth_history),
             'depth_max_bad_frames': int(args.mint_depth_max_bad_frames),
+            'motion_gate': bool(args.mint_motion_gate),
+            'motion_center_threshold': float(args.mint_motion_center_threshold),
+            'motion_size_ratio': float(args.mint_motion_size_ratio),
+            'motion_iou_threshold': float(args.mint_motion_iou_threshold),
+            'motion_joint_threshold': float(args.mint_motion_joint_threshold),
+            'motion_min_votes': int(args.mint_motion_min_votes),
+            'motion_reacquire_frames': int(args.mint_motion_reacquire_frames),
         }
         if observation_cache.exists() and not args.force_detect:
             cleaned_data = load_mint_observation_cache(
@@ -388,6 +418,19 @@ def main():
                 (out_dir / 'mint_depth_gate.json').write_text(
                     json.dumps(depth_report, indent=2) + '\n')
                 print(f"Depth gate rejected {depth_report['rejected_observations']} observations")
+            if args.mint_motion_gate:
+                cleaned_data, motion_report = apply_motion_gate(
+                    cleaned_data, img_paths,
+                    center_jump_threshold=args.mint_motion_center_threshold,
+                    size_ratio_threshold=args.mint_motion_size_ratio,
+                    iou_threshold=args.mint_motion_iou_threshold,
+                    joint_jump_threshold=args.mint_motion_joint_threshold,
+                    min_bad_votes=args.mint_motion_min_votes,
+                    reacquire_frames=args.mint_motion_reacquire_frames,
+                )
+                (out_dir / 'mint_motion_gate.json').write_text(
+                    json.dumps(motion_report, indent=2) + '\n')
+                print(f"Motion gate rejected {motion_report['counts']['rejected']} observations")
             save_mint_observation_cache(
                 observation_cache, cleaned_data,
                 image_paths=img_paths, mint_path=mint_cache, config=mint_config)

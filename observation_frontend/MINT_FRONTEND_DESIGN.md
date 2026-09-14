@@ -91,3 +91,16 @@ that fragment, preventing a bad interval from being interpolated into a valid
 MANO track. The depth report is stored as `mint_depth_gate.json` and included
 in the observation cache configuration, so changing the depth source or
 thresholds cannot silently reuse an old cache.
+
+## Optional pre-HaMeR motion gate
+
+`--mint_motion_gate` runs after the depth gate and before
+`_collect_observation_inputs()`. It compares each side's accepted observation
+with the previous consecutive observation using normalized bbox-center motion,
+bbox area ratio, bbox IoU, and median projected-joint motion. By default at
+least two failed tests are required before rejecting a sample. A two-frame
+lookahead labels an isolated return (`A -> X -> A`) separately from a
+persistent jump (`A -> B -> B`), but both cases start a new physical fragment
+after the rejected transition. Therefore the optional MANO smoother never
+interpolates from the old location into the new one. Motion thresholds and
+lookahead length are included in the observation-cache configuration.

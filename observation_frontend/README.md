@@ -20,6 +20,12 @@ python run.py --input /path/to/frames --frontend mint \
 python run.py --input /path/to/frames --frontend mint \
   --mint_predictions /path/to/mint_predictions.npz --backend hamer \
   --mint_depth_gate --mint_depth_dir /path/to/depth
+
+# Add the pre-HaMeR spatial jump gate as well:
+python run.py --input /path/to/frames --frontend mint \
+  --mint_predictions /path/to/mint_predictions.npz --backend hamer \
+  --mint_depth_gate --mint_depth_dir /path/to/depth \
+  --mint_motion_gate
 ```
 
 `--mint_style_smoother` is an opt-in UKF + unscented RTS pass applied to
@@ -40,7 +46,10 @@ interval. Depth is a veto only; it does not choose between MINT and YOLO.
 
 `--mint_yolo_check` remains a diagnostic full-image comparison and does not
 replace MINT bboxes. The resulting `mint_depth_gate.json` and
-`mint_yolo_check.json` are written beside the normal observation cache.
+`mint_motion_gate.json` and `mint_yolo_check.json` are written beside the
+normal observation cache. The motion gate uses bbox center/size/IoU and
+projected-joint jumps; it rejects a vote majority before HaMeR and starts a
+new track fragment so the MANO smoother cannot bridge the rejected interval.
 
 ## Scope
 
