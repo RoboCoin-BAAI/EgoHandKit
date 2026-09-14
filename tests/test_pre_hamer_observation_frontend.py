@@ -78,6 +78,23 @@ def test_frontend_deduplicates_before_hamer_and_keeps_physical_identity() -> Non
     assert all(len(frame["selected_for_hamer"]) == 1 for frame in result["frames"])
 
 
+def test_frontend_can_keep_overlapping_opposite_side_proposals() -> None:
+    frames = [
+        {
+            "frame_idx": 0,
+            "observations": [
+                _observation(0, 0, (100, 100), handedness="left"),
+                _observation(0, 1, (101, 100), handedness="right"),
+            ],
+        }
+    ]
+    result = select_pre_hamer_observations(
+        frames, image_size=(640, 480), enable_consolidation=False
+    )
+    assert result["consolidation_enabled"] is False
+    assert len(result["frames"][0]["selected_for_hamer"]) == 2
+
+
 def test_frontend_does_not_modify_caller_observations() -> None:
     frames = [
         {
@@ -190,6 +207,8 @@ def test_frontend_keeps_handedness_hypothesis_without_breaking_track() -> None:
     selected = [frame["selected_for_hamer"][0] for frame in result["frames"]]
     assert [row["handedness"] for row in selected] == ["left", "right", "left"]
     assert len({row["physical_track_id"] for row in selected}) == 1
+    assert all(row["backend_handedness"] == "left" for row in selected)
+    assert all(row["backend_handedness_source"] == "track_dominant" for row in selected)
 
 
 def test_frontend_handles_empty_sequence_and_gate_rejected_observation() -> None:

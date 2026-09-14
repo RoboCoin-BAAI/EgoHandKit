@@ -8,10 +8,10 @@ frontend remains available and is the default. Omega is now disabled by default
 for both paths; use `--omega_world` only when world-space output is wanted.
 
 ```text
-All Detectron2 person detections above the existing score threshold
-  -> ViTPose original whole-body keypoints for each person
-  -> existing hand keypoint gate and raw hand bounding boxes
-  -> unchanged hand-observation consolidation
+Highest-score Detectron2 person detection (wearer-first by default)
+  -> ViTPose original whole-body keypoints
+  -> existing hand keypoint gate and EgoHandKit-compatible padded bboxes
+  -> same-frame duplicate consolidation
   -> unchanged offline physical-hand temporal association
   -> original selected observation, with physical track/fragment metadata
   -> backend's existing crop generator
@@ -23,31 +23,41 @@ This path does not merge YOLO scores with ViTPose scores. It replaces both
 legacy Pass 1 selection and Pass 2 cleanup. It never invokes the old handedness
 correction, bbox interpolation, or short-track removal. `--use_vitpose` and
 `--no_clean_bbox` are therefore rejected with this frontend rather than silently
-ignored. Source provenance and licensing are in `observation_frontend/NOTICE.md`.
+ignored. Use `--observation_all_person` only for a recall experiment; injecting
+other people's proposals into a two-slot association is not the default.
+Same-frame consolidation remains enabled by default because the ViTPose left
+and right hypotheses can be two overlapping detections of the same physical
+hand. Use `--observation_no_consolidation` only as an ablation; keeping both
+boxes can make one hand appear as two meshes that jump around.
+Source provenance and licensing are in `observation_frontend/NOTICE.md`.
 
 ## Detection And Geometry
 
-Detectron2 class 0 detections with score strictly greater than 0.5 are retained,
-not just the best-scoring person. Each is processed independently by the
-existing ViTPose wrapper. Hand points use the last 42 whole-body points, split
-into left/right groups of 21. The existing gate requires more than three points
-with confidence strictly greater than 0.5. Their coordinate minima/maxima define
-the raw hand bbox, exactly as in the legacy ViTPose detector. Original keypoints
-and original handedness are retained without correction or averaging.
+Detectron2 class 0 detections with score strictly greater than 0.5 are retained;
+by default only the highest-scoring person is processed (all detections can be
+enabled explicitly). Hand points use the last 42 whole-body points, split into
+left/right groups of 21. The existing gate requires more than three points with
+confidence strictly greater than 0.5. Their coordinate minima/maxima define the
+raw hand bbox, then the same 1.2x padding as the legacy ViTPose detector is
+applied. Original keypoints and original handedness are retained without
+correction or averaging.
 
-The selected raw bbox goes through the target backend's original crop rules,
+The padded bbox goes through the target backend's original crop rules,
 including padding, resizing, normalization and left-hand flipping. There is no
 new crop algorithm. The selected record also carries `backend_handedness`, a
 track-level anatomical side used only by the HMR adapter to keep crop flipping
-stable when ViTPose flickers for an isolated frame. Raw `handedness` remains in
-the observation metadata for diagnostics.
+stable when ViTPose flickers for an isolated frame. The backend side is fixed to
+the track's dominant side so it cannot flip the HaWoR crop on every ViTPose
+label change. Raw `handedness` remains in the observation metadata for
+diagnostics.
 
 Physical track slots are anonymous, not anatomical left/right identities. Two
 selected observations can have the same original handedness and must both
-survive. HaWoR inference is split at a missing frame, a fragment change, or a
-change of backend handedness. It never concatenates different physical hands
-solely because their side labels match. This necessary temporal adaptation is
-not evidence that HaWoR reproduces the source HaMeR results.
+survive. HaWoR inference is split at a missing frame or a fragment change; the
+backend side is fixed to each track's dominant side instead of following raw
+per-frame labels. It never concatenates different physical hands solely because
+their side labels match. This necessary temporal adaptation is not evidence that
+HaWoR reproduces the source HaMeR results.
 
 The association module also contains an optional two-frame constant-velocity
 prior (`motion_prediction_weight`). It is disabled by default while sequence-

@@ -49,14 +49,17 @@ def test_all_person_proposals_and_original_gate(tmp_path):
     points[-21:-17, 2] = 0.9  # Four right keypoints: accepted.
     pose = Mock()
     pose.predict_pose.return_value = [{'keypoints': points}]
-    result = adapter.extract_observations([path], detector, pose)
+    result = adapter.extract_observations([path], detector, pose, all_person=True)
     assert pose.predict_pose.call_count == 2
     selected = result['frames'][0]['observations']
     assert [item['candidate_id'] for item in selected] == [1, 3]
     assert [item['person_index'] for item in selected] == [0, 1]
     np.testing.assert_array_equal(selected[0]['vitpose_keypoints_2d'], points[-21:])
     reliable = points[-21:][points[-21:, 2] > 0.5, :2]
-    np.testing.assert_array_equal(selected[0]['bbox_xyxy'], [*reliable.min(0), *reliable.max(0)])
+    expected_raw = np.array([*reliable.min(0), *reliable.max(0)], dtype=np.float32)
+    expected = adapter.enlarge_bbox(expected_raw, scale=1.2, img_shape=(100, 160, 3))
+    np.testing.assert_allclose(selected[0]['bbox_xyxy'], expected)
+    np.testing.assert_array_equal(selected[0]['raw_bbox_xyxy'], expected_raw)
 
 
 def test_empty_detection_keeps_timestamps(tmp_path):

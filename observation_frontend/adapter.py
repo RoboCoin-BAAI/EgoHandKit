@@ -17,12 +17,30 @@ from .physical_hand_temporal_association import (
     DEFAULT_CONFIG as DEFAULT_ASSOCIATION_CONFIG,
     PhysicalHandTemporalAssociationConfig,
 )
+from bbox_utils import enlarge_bbox
 
 
-def extract_observations(image_paths, body_detector, vitpose, fps=30):
+def extract_observations(
+    image_paths,
+    body_detector,
+    vitpose,
+    fps=30,
+    *,
+    all_person=False,
+    bbox_scale=1.2,
+):
+    """Extract ViTPose hand proposals using EgoHandKit-compatible crops.
+
+    The default intentionally follows EgoHandKit's established wearer-first
+    path: only the highest-scoring person is sent to ViTPose.  Running pose on
+    every detected person is available as an explicit recall experiment, but
+    it tends to inject other-person candidates into the two-hand association.
+    """
+    if bbox_scale <= 0:
+        raise ValueError('bbox_scale must be positive')
     frames = []
     image_size = None
-    for frame_idx, path in enumerate(tqdm(image_paths, desc='All-person hand observations')):
+    for frame_idx, path in enumerate(tqdm(image_paths, desc='ViTPose hand observations')):
         image = cv2.imread(str(path))
         if image is None:
             raise ValueError(f'Cannot read image: {path}')
@@ -35,8 +53,20 @@ def extract_observations(image_paths, body_detector, vitpose, fps=30):
         boxes = instances.pred_boxes.tensor[valid].detach().cpu().numpy()
         scores = instances.scores[valid].detach().cpu().numpy()
         observations = []
-        # One person at a time bounds ViTPose activation memory, without top-1 filtering.
-        for person_index, (box, score) in enumerate(zip(boxes, scores)):
+        if not all_person and len(boxes):
+            # Match bbox_utils.extract_raw_bboxes_vitpose: the camera wearer is
+            # represented by the highest-confidence person proposal.
+            best = int(np.argmax(scores))
+            person_items = [(best, boxes[best], scores[best])]
+        else:
+            person_items = list(enumerate(zip(boxes, scores)))
+            person_items = [
+                (person_index, box, score)
+                for person_index, (box, score) in person_items
+            ]
+
+        # One person at a time bounds ViTPose activation memory.
+        for person_index, box, score in person_items:
             detections = np.concatenate([box, [score]])[None]
             poses = vitpose.predict_pose(image[:, :, ::-1], [detections])
             if not poses:
@@ -52,7 +82,10 @@ def extract_observations(image_paths, body_detector, vitpose, fps=30):
                 if reliable.sum() <= 3:
                     continue
                 xy = keypoints[reliable, :2]
-                bbox = np.concatenate([xy.min(axis=0), xy.max(axis=0)])
+                raw_bbox = np.concatenate([xy.min(axis=0), xy.max(axis=0)])
+                # HaWoR/legacy both expect a padded crop.  Feeding a tight
+                # keypoint rectangle silently removes the wrist/palm context.
+                bbox = enlarge_bbox(raw_bbox, scale=bbox_scale, img_shape=image.shape)
                 observations.append({
                     'frame_idx': frame_idx,
                     'candidate_id': 2 * person_index + side_index,
@@ -61,6 +94,7 @@ def extract_observations(image_paths, body_detector, vitpose, fps=30):
                     'person_bbox_xyxy': box.tolist(),
                     'handedness': side,
                     'bbox_xyxy': bbox.tolist(),
+                    'raw_bbox_xyxy': raw_bbox.tolist(),
                     'vitpose_keypoints_2d': keypoints.tolist(),
                     'official_gate_passed': True,
                     'source': 'detectron2_vitpose',
@@ -94,6 +128,10 @@ def cache_signature(
     repo_root,
     fps,
     association_config: PhysicalHandTemporalAssociationConfig = DEFAULT_ASSOCIATION_CONFIG,
+    *,
+    all_person=False,
+    bbox_scale=1.2,
+    enable_consolidation=True,
 ):
     root = Path(repo_root)
     assets = [
@@ -112,6 +150,9 @@ def cache_signature(
         'code': [hashlib.sha256(path.read_bytes()).hexdigest() for path in modules],
         'fps': fps,
         'association_config': association_config.as_dict(),
+        'all_person': bool(all_person),
+        'bbox_scale': float(bbox_scale),
+        'enable_consolidation': bool(enable_consolidation),
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
@@ -132,7 +173,7 @@ def _save_cache(path, signature, result):
     temporary.replace(path)
 
 
-def _detect_with_models(image_paths, repo_root, device, fps):
+def _detect_with_models(image_paths, repo_root, device, fps, *, all_person=False, bbox_scale=1.2):
     import torch
     from detectron2.config import LazyConfig
     from hmr_backends.utils.utils_detectron2 import DefaultPredictor_Lazy
@@ -146,7 +187,10 @@ def _detect_with_models(image_paths, repo_root, device, fps):
     detector = DefaultPredictor_Lazy(cfg, device=device)
     pose = ViTPoseModel(str(root), device)
     try:
-        return extract_observations(image_paths, detector, pose, fps)
+        return extract_observations(
+            image_paths, detector, pose, fps,
+            all_person=all_person, bbox_scale=bbox_scale,
+        )
     finally:
         del detector, pose
         gc.collect()
@@ -162,22 +206,35 @@ def run_observation_frontend(
     fps=30,
     force=False,
     association_config: PhysicalHandTemporalAssociationConfig = DEFAULT_ASSOCIATION_CONFIG,
+    *,
+    all_person=False,
+    bbox_scale=1.2,
+    enable_consolidation=True,
 ):
     if not image_paths or fps <= 0:
         raise ValueError('Observation frontend requires images and a positive FPS')
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    signature = cache_signature(image_paths, repo_root, fps, association_config)
+    signature = cache_signature(
+        image_paths, repo_root, fps, association_config,
+        all_person=all_person, bbox_scale=bbox_scale,
+        enable_consolidation=enable_consolidation,
+    )
     selected_path = out_dir / 'observations_selected.pkl'
     selected = None if force else _load_cache(selected_path, signature)
     if selected is None:
         raw_path = out_dir / 'observations_raw.pkl'
         raw = None if force else _load_cache(raw_path, signature)
         if raw is None:
-            raw = _detect_with_models(image_paths, repo_root, device, fps)
+            raw = _detect_with_models(
+                image_paths, repo_root, device, fps,
+                all_person=all_person, bbox_scale=bbox_scale,
+            )
             _save_cache(raw_path, signature, raw)
         selected = select_pre_hamer_observations(
-            raw['frames'], image_size=raw['image_size'], association_config=association_config,
+            raw['frames'], image_size=raw['image_size'],
+            association_config=association_config,
+            enable_consolidation=enable_consolidation,
         )
         _save_cache(selected_path, signature, selected)
     else:

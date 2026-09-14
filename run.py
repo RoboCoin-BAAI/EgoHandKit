@@ -123,7 +123,11 @@ def build_arg_parser():
     parser.add_argument('--backend', type=str, default='hawor', choices=['hamer', 'htm', 'wilor', 'hawor'],
                         help='Backend model to use (hamer, htm, wilor, or hawor)')
     parser.add_argument('--frontend', choices=['legacy', 'observations'], default='legacy',
-                        help='Legacy YOLO/cleanup or all-person ViTPose observation selection (offline)')
+                        help='Legacy YOLO/cleanup or wearer-first ViTPose observation selection (offline)')
+    parser.add_argument('--observation_all_person', action='store_true', default=False,
+                        help='Observation experiment: run ViTPose on every detected person instead of the highest-score wearer')
+    parser.add_argument('--observation_no_consolidation', action='store_true', default=False,
+                        help='Observation ablation: keep overlapping same-frame proposals instead of removing duplicates')
     parser.add_argument('--motion_prediction_weight', type=float, default=0.0,
                         help='Optional robust constant-velocity prior for observations association')
     parser.add_argument('--switch_penalty', type=float, default=0.0,
@@ -267,6 +271,8 @@ def main():
         cleaned_data = run_observation_frontend(
             img_paths, out_dir, repo_root, device, fps=fps, force=args.force_detect,
             association_config=association_config,
+            all_person=args.observation_all_person,
+            enable_consolidation=not args.observation_no_consolidation,
         )
     elif pass1_cache.exists() and not args.force_detect:
         print(f"\nLoading cached Pass 1 results from {pass1_cache}")
