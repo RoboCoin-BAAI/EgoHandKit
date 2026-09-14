@@ -74,7 +74,10 @@ def _collect_observation_inputs(frames, args, backend_name):
                 frame_idx=index, img_path=frame['img_path'], hand_side=side,
                 bbox=bbox, bbox_square=np.array([*center, size, size], dtype=np.float32),
                 keypoints=np.asarray(observation['vitpose_keypoints_2d'], dtype=np.float32).copy(),
-                observation_meta={'frontend': 'observations', **deepcopy(observation)},
+                observation_meta={
+                    'frontend': observation.get('observation_meta', {}).get('source', 'observations'),
+                    **deepcopy(observation),
+                },
             )
             instances.append(inst)
             by_key[key] = inst

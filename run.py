@@ -23,7 +23,9 @@ Hand overlays are the default. Use --omega_world to opt into world recovery.
 from pathlib import Path
 import argparse
 import gc
+import json
 import os
+import shutil
 import sys
 
 # ---------------------------------------------------------------------------
@@ -122,8 +124,20 @@ def build_arg_parser():
                         help='Output/cache sequence name. Defaults to session_camera for dataset videos')
     parser.add_argument('--backend', type=str, default='hawor', choices=['hamer', 'htm', 'wilor', 'hawor'],
                         help='Backend model to use (hamer, htm, wilor, or hawor)')
-    parser.add_argument('--frontend', choices=['legacy', 'observations'], default='legacy',
-                        help='Legacy YOLO/cleanup or wearer-first ViTPose observation selection (offline)')
+    parser.add_argument('--frontend', choices=['legacy', 'observations', 'mint'], default='legacy',
+                        help='Legacy YOLO/cleanup, ViTPose observations, or an external MINT prediction cache')
+    parser.add_argument('--mint_predictions', type=str, default=None,
+                        help='External MINT prediction cache (.npz); required with --frontend mint')
+    parser.add_argument('--mint_mano_model_dir', type=str, default=None,
+                        help='MANO model directory for decoding raw MINT hand[218] when *_joints_cam are absent')
+    parser.add_argument('--mint_bbox_scale', type=float, default=1.2,
+                        help='Square padding applied to projected MINT joints before HaMeR')
+    parser.add_argument('--mint_presence_threshold', type=float, default=0.5,
+                        help='Minimum MINT hand presence probability to emit an observation')
+    parser.add_argument('--mint_yolo_check', action='store_true', default=False,
+                        help='Run full-image YOLO as a diagnostic comparison; never replaces MINT observations')
+    parser.add_argument('--mint_yolo_iou_threshold', type=float, default=0.1,
+                        help='IoU threshold used by --mint_yolo_check')
     parser.add_argument('--observation_all_person', action='store_true', default=False,
                         help='Observation experiment: run ViTPose on every detected person instead of the highest-score wearer')
     parser.add_argument('--observation_no_consolidation', action='store_true', default=False,
@@ -180,6 +194,18 @@ def main():
     args = parser.parse_args()
     if args.frontend == 'observations' and (args.use_vitpose or args.no_clean_bbox):
         parser.error('--frontend observations replaces legacy detection/cleanup; omit --use_vitpose and --no_clean_bbox')
+    if args.frontend == 'mint' and (args.use_vitpose or args.no_clean_bbox):
+        parser.error('--frontend mint consumes external predictions; omit --use_vitpose and --no_clean_bbox')
+    if args.frontend == 'mint' and not args.mint_predictions:
+        parser.error('--frontend mint requires --mint_predictions /path/to/mint_predictions.npz')
+    if args.frontend != 'mint' and args.mint_predictions:
+        parser.error('--mint_predictions is only valid with --frontend mint')
+    if args.mint_bbox_scale <= 0:
+        parser.error('--mint_bbox_scale must be positive')
+    if not 0 <= args.mint_presence_threshold <= 1:
+        parser.error('--mint_presence_threshold must lie in [0,1]')
+    if not 0 <= args.mint_yolo_iou_threshold <= 1:
+        parser.error('--mint_yolo_iou_threshold must lie in [0,1]')
     if args.fps <= 0:
         parser.error('--fps must be positive')
 
@@ -196,7 +222,8 @@ def main():
     else:
         raise ValueError(f"--input must be a video file ({', '.join(VIDEO_EXTS)}) or image folder: {input_path}")
 
-    output_name = video_name if args.frontend == 'legacy' else f'{video_name}_observations'
+    output_name = (video_name if args.frontend == 'legacy' else
+                   f'{video_name}_{args.frontend}')
     out_dir = Path(args.output_root) / output_name
     out_dir.mkdir(parents=True, exist_ok=True)
     res_path = out_dir / f'{video_name}_{args.backend}.pkl'
@@ -274,6 +301,57 @@ def main():
             all_person=args.observation_all_person,
             enable_consolidation=not args.observation_no_consolidation,
         )
+    elif args.frontend == 'mint':
+        from observation_frontend.mint_adapter import (
+            build_mint_observations,
+            load_mint_observation_cache,
+            load_mint_predictions,
+            save_mint_observation_cache,
+        )
+        mint_cache = Path(args.mint_predictions)
+        if not mint_cache.is_file():
+            raise FileNotFoundError(f"MINT prediction cache does not exist: {mint_cache}")
+        saved_mint_cache = out_dir / 'mint_predictions.npz'
+        if mint_cache.resolve() != saved_mint_cache.resolve() and (args.force_detect or not saved_mint_cache.exists()):
+            shutil.copy2(mint_cache, saved_mint_cache)
+            print(f"MINT prediction cache copied to {saved_mint_cache}")
+        observation_cache = out_dir / 'mint_observations.pkl'
+        mint_config = {
+            'bbox_scale': float(args.mint_bbox_scale),
+            'presence_threshold': float(args.mint_presence_threshold),
+            'mano_model_dir': str(Path(args.mint_mano_model_dir).resolve()) if args.mint_mano_model_dir else None,
+            'projection': 'camera_frame_opencv_to_original_pixels_v1',
+        }
+        if observation_cache.exists() and not args.force_detect:
+            cleaned_data = load_mint_observation_cache(
+                observation_cache, image_paths=img_paths, mint_path=mint_cache, config=mint_config)
+            print(f"Loading MINT observation cache: {observation_cache}")
+        else:
+            mint_predictions = load_mint_predictions(mint_cache)
+            cleaned_data = build_mint_observations(
+                mint_predictions, img_paths,
+                bbox_scale=args.mint_bbox_scale,
+                presence_threshold=args.mint_presence_threshold,
+                mano_model_dir=args.mint_mano_model_dir,
+            )
+            save_mint_observation_cache(
+                observation_cache, cleaned_data,
+                image_paths=img_paths, mint_path=mint_cache, config=mint_config)
+            print(f"MINT observations cached to {observation_cache}")
+        if args.mint_yolo_check:
+            from observation_frontend.mint_adapter import compare_mint_yolo_observations
+            print(f"\nRunning YOLO diagnostic check with {args.yolo_model}")
+            yolo_detector = YOLO(args.yolo_model)
+            yolo_detector.to(device)
+            yolo_frames = extract_raw_bboxes(img_paths, yolo_detector, vis_dir=None, fps=fps)
+            yolo_report = compare_mint_yolo_observations(
+                cleaned_data, yolo_frames,
+                iou_threshold=args.mint_yolo_iou_threshold,
+            )
+            (out_dir / 'mint_yolo_check.json').write_text(
+                json.dumps(yolo_report, indent=2) + '\n')
+            print(f"MINT/YOLO diagnostic saved to {out_dir / 'mint_yolo_check.json'}")
+            print(f"YOLO check counts: {yolo_report['counts']}")
     elif pass1_cache.exists() and not args.force_detect:
         print(f"\nLoading cached Pass 1 results from {pass1_cache}")
         with open(pass1_cache, 'rb') as f:

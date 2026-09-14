@@ -1,5 +1,21 @@
 # Observation Frontend
 
+## MINT offline frontend
+
+`--frontend mint --mint_predictions /path/to/mint_predictions.npz` loads the
+versioned external cache described in [MINT_FRONTEND_DESIGN.md](MINT_FRONTEND_DESIGN.md),
+projects camera-frame MINT joints to original-image pixels, and feeds the
+result into the existing HaMeR crop/recovery path. It does not import MINT or
+replace HaMeR's MANO prediction. Use `--mint_mano_model_dir` when the cache
+contains raw `[T,218]` hand parameters without decoded `*_joints_cam` arrays.
+
+Example:
+
+```bash
+python run.py --input /path/to/frames --frontend mint \
+  --mint_predictions /path/to/mint_predictions.npz --backend hamer
+```
+
 ## Scope
 
 The migrated frontend is an explicit, offline evaluation path, not a claim of
