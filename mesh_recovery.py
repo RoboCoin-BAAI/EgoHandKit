@@ -16,6 +16,7 @@ import numpy as np
 from hmr_backends.runners.schema import HandInstance, Pass3Inputs, BackendOutputInstance
 from hmr_backends.runners.factory import build_runner
 from hmr_backends.utils.render_policy import build_left_hand_policy
+from hmr_backends.utils.mint_style_smoother import smooth_hand_sequence
 from bbox_utils import create_video_from_images
 
 
@@ -211,6 +212,88 @@ def _assemble_results(raw_outputs, cleaned_data):
     return results_dict
 
 
+def _numpy_value(value):
+    if hasattr(value, 'detach'):
+        value = value.detach().cpu().numpy()
+    return np.asarray(value)
+
+
+def _rotmat_to_6d(value):
+    matrix = _numpy_value(value)
+    return matrix[..., :2, :].reshape(*matrix.shape[:-2], 6)
+
+
+def _smooth_raw_outputs(raw_outputs, backend_bundle, device, args):
+    """Apply MINT's camera-frame UKF/RTS smoother to HaMeR track outputs."""
+    grouped = {}
+    for output in raw_outputs:
+        track = output.raw_backend_meta.get(
+            'physical_track_id', 1 if output.hand_side == 'right' else 0)
+        grouped.setdefault((int(track), output.hand_side), []).append(output)
+    for (_track, _side), sequence in grouped.items():
+        sequence.sort(key=lambda item: item.frame_idx)
+        if len(sequence) < 4:
+            continue
+        values = []
+        for output in sequence:
+            params = output.mano_params
+            global_orient = _numpy_value(params['global_orient']).reshape(3, 3)
+            hand_pose = _numpy_value(params['hand_pose']).reshape(15, 3, 3)
+            betas = _numpy_value(params['betas']).reshape(10)
+            values.append(np.concatenate([
+                np.asarray(output.cam_trans, dtype=np.float32).reshape(3),
+                _rotmat_to_6d(global_orient),
+                _rotmat_to_6d(hand_pose).reshape(90),
+                betas,
+            ]))
+        smoothed = smooth_hand_sequence(
+            np.stack(values),
+            np.asarray([item.frame_idx for item in sequence]),
+            q=args.mint_smoother_q,
+            r=args.mint_smoother_r,
+            beta=args.mint_smoother_beta,
+        )
+        for output, value in zip(sequence, smoothed):
+            global_orient = _rotation6d_to_matrix(value[3:9])
+            hand_pose = _rotation6d_to_matrix(value[9:99].reshape(15, 6))
+            params = dict(output.mano_params)
+            params['global_orient'] = global_orient.astype(np.float32)
+            params['hand_pose'] = hand_pose.astype(np.float32)
+            params['betas'] = value[99:109].astype(np.float32)
+            output.mano_params = params
+            output.cam_trans = value[:3].astype(np.float32)
+            output.pred_vertices = _recompute_vertices(
+                backend_bundle.model, params, device)
+            output.raw_backend_meta['mint_style_smoother'] = {
+                'q': float(args.mint_smoother_q), 'r': float(args.mint_smoother_r),
+                'beta': float(args.mint_smoother_beta), 'track_id': int(_track),
+            }
+
+
+def _rotation6d_to_matrix(value):
+    value = np.asarray(value, dtype=np.float32).reshape(-1, 6)
+    a0, a1 = value[:, :3], value[:, 3:]
+    b0 = a0 / np.maximum(np.linalg.norm(a0, axis=1, keepdims=True), 1e-8)
+    a1 = a1 - np.sum(b0 * a1, axis=1, keepdims=True) * b0
+    b1 = a1 / np.maximum(np.linalg.norm(a1, axis=1, keepdims=True), 1e-8)
+    b2 = np.cross(b0, b1)
+    return np.stack([b0, b1, b2], axis=1)
+
+
+def _recompute_vertices(model, params, device):
+    import torch
+    rotmat = np.concatenate([
+        _numpy_value(params['global_orient']).reshape(1, 3, 3),
+        _numpy_value(params['hand_pose']).reshape(15, 3, 3),
+    ], axis=0)
+    with torch.no_grad():
+        output = model.mano.query({
+            'pred_rotmat': torch.from_numpy(rotmat).unsqueeze(0).float().to(device),
+            'pred_shape': torch.from_numpy(_numpy_value(params['betas']).reshape(1, 10)).float().to(device),
+        })
+    return output.vertices[0].detach().cpu().numpy()
+
+
 # ---------------------------------------------------------------------------
 # Rendering
 # ---------------------------------------------------------------------------
@@ -319,6 +402,8 @@ def run_mesh_recovery(cleaned_data, backend_bundle, renderer, args, out_dir, fps
     runner = build_runner(backend_bundle, args, device)
     left_policy = build_left_hand_policy(device=device)
     raw_outputs = runner.infer(inputs)
+    if getattr(args, 'mint_style_smoother', False):
+        _smooth_raw_outputs(raw_outputs, backend_bundle, device, args)
     results = _assemble_results(raw_outputs, cleaned_data)
     _render_results(raw_outputs, cleaned_data, renderer, args, out_dir, fps, left_policy, backend_bundle)
 

@@ -13,8 +13,14 @@ Example:
 
 ```bash
 python run.py --input /path/to/frames --frontend mint \
-  --mint_predictions /path/to/mint_predictions.npz --backend hamer
+  --mint_predictions /path/to/mint_predictions.npz --backend hamer \
+  --mint_style_smoother
 ```
+
+`--mint_style_smoother` is an opt-in UKF + unscented RTS pass applied to
+HaMeR's per-track camera translation, MANO rotations, and shape after HMR
+inference. It is a local port of MINT's representation-safe smoothing logic;
+the MINT repository is not imported at runtime.
 
 ## Scope
 

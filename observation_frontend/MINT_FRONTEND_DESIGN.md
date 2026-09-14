@@ -66,3 +66,13 @@ existing `_collect_observation_inputs()` and `run_mesh_recovery()` paths.
 when a MANO model directory is supplied. For dependency-light exports and
 tests, `left_joints_cam`/`right_joints_cam` may be included alongside the raw
 arrays; no MINT Python import is required.
+
+## Optional post-HMR smoothing
+
+`--mint_style_smoother` applies a local port of MINT's UKF + unscented RTS
+filter after HaMeR inference. It smooths each physical track in camera-space
+translation, quaternion global orientation, axis-angle joint pose, and shape,
+then converts rotations back to the backend's MANO matrices and recomputes
+vertices for rendering. Tracks with fewer than four observations are left
+unchanged. This stage is opt-in so the original MINT frontend behavior remains
+reproducible.

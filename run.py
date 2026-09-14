@@ -138,6 +138,14 @@ def build_arg_parser():
                         help='Run full-image YOLO as a diagnostic comparison; never replaces MINT observations')
     parser.add_argument('--mint_yolo_iou_threshold', type=float, default=0.1,
                         help='IoU threshold used by --mint_yolo_check')
+    parser.add_argument('--mint_style_smoother', action='store_true', default=False,
+                        help='Apply the MINT UKF/RTS MANO smoother after HMR inference')
+    parser.add_argument('--mint_smoother_q', type=float, default=0.6,
+                        help='MINT-style smoother process-noise scale')
+    parser.add_argument('--mint_smoother_r', type=float, default=0.6,
+                        help='MINT-style smoother observation-noise scale')
+    parser.add_argument('--mint_smoother_beta', type=float, default=2.0,
+                        help='MINT-style speed-adaptive noise scale')
     parser.add_argument('--observation_all_person', action='store_true', default=False,
                         help='Observation experiment: run ViTPose on every detected person instead of the highest-score wearer')
     parser.add_argument('--observation_no_consolidation', action='store_true', default=False,
@@ -206,6 +214,10 @@ def main():
         parser.error('--mint_presence_threshold must lie in [0,1]')
     if not 0 <= args.mint_yolo_iou_threshold <= 1:
         parser.error('--mint_yolo_iou_threshold must lie in [0,1]')
+    if args.mint_style_smoother and args.frontend != 'mint':
+        parser.error('--mint_style_smoother currently requires --frontend mint')
+    if args.mint_smoother_q <= 0 or args.mint_smoother_r <= 0 or args.mint_smoother_beta < 0:
+        parser.error('--mint_smoother_q/r must be positive and beta must be non-negative')
     if args.fps <= 0:
         parser.error('--fps must be positive')
 
