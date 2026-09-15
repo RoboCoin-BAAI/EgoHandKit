@@ -32,8 +32,8 @@ def _bbox_metrics(previous: dict[str, Any], current: dict[str, Any], diagonal: f
         "size_ratio": float(max(prev_area, curr_area) / max(min(prev_area, curr_area), 1e-6)),
         "iou": float(iou),
     }
-    previous_points = np.asarray(previous.get("vitpose_keypoints_2d", []), dtype=np.float32)
-    current_points = np.asarray(current.get("vitpose_keypoints_2d", []), dtype=np.float32)
+    previous_points = np.asarray(previous.get("keypoints_2d", previous.get("vitpose_keypoints_2d", [])), dtype=np.float32)
+    current_points = np.asarray(current.get("keypoints_2d", current.get("vitpose_keypoints_2d", [])), dtype=np.float32)
     if previous_points.ndim == 2 and current_points.shape == previous_points.shape and previous_points.shape[1] >= 2:
         valid = np.isfinite(previous_points[:, :2]).all(axis=1) & np.isfinite(current_points[:, :2]).all(axis=1)
         if valid.any():
@@ -90,7 +90,7 @@ def apply_motion_gate(
 
     candidates = {"left": [], "right": []}
     for frame_position, frame in enumerate(frames):
-        for observation in frame.get("selected_for_hamer", []):
+        for observation in frame.get("hands", frame.get("selected_for_hamer", [])):
             side = observation["handedness"]
             candidates[side].append((frame_position, observation))
 
@@ -166,7 +166,7 @@ def apply_motion_gate(
                 classification = "new_fragment"
             updated = dict(observation)
             updated["physical_track_fragment_id"] = int(max_fragment)
-            meta = dict(updated.get("observation_meta", {}))
+            meta = dict(updated.get("observation_meta", updated.get("meta", {})))
             meta.update({"motion_gate": "pass", "motion_gate_metrics": metrics})
             updated["observation_meta"] = meta
             accepted[(position, side)] = updated
@@ -183,10 +183,10 @@ def apply_motion_gate(
     for position, frame in enumerate(frames):
         selected = [
             accepted[(position, observation["handedness"])]
-            for observation in frame.get("selected_for_hamer", [])
+            for observation in frame.get("hands", frame.get("selected_for_hamer", []))
             if (position, observation["handedness"]) in accepted
         ]
-        output.append({**frame, "selected_for_hamer": selected, "motion_gate": diagnostics[position]["hands"]})
+        output.append({**frame, "selected_for_hamer": selected, "hands": selected, "motion_gate": diagnostics[position]["hands"]})
     report = {
         "schema_version": "motion_gate.v1",
         "frame_count": len(frames),

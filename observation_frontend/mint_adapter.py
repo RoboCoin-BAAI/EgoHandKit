@@ -35,7 +35,7 @@ def enlarge_bbox(bbox, scale=1.2, img_shape=None):
 
 
 MINT_CACHE_SCHEMA = "mint_prediction_cache.v1"
-MINT_OBSERVATION_SCHEMA = "mint_observations.v1"
+MINT_OBSERVATION_SCHEMA = "mint_observations.v2"
 _PER_HAND = 109
 
 
@@ -356,7 +356,7 @@ def build_mint_observations(predictions: Mapping[str, Any], image_paths: list[st
         else:
             K_input, direct_original_K = _pose_intrinsics(predictions["pose_enc"][i], int(mint_h), int(mint_w)), False
         frame = {"frame_idx": int(predictions["frame_idx"][i]), "img_path": path,
-                 "selected_for_hamer": []}
+                 "selected_for_hamer": [], "hands": []}
         if predictions["timestamps"] is not None:
             frame["timestamp_ns"] = int(predictions["timestamps"][i])
         affine = predictions["orig_to_mint"][i] if predictions["orig_to_mint"] is not None else None
@@ -380,14 +380,16 @@ def build_mint_observations(predictions: Mapping[str, Any], image_paths: list[st
             keypoint_xy = np.nan_to_num(uv, nan=0.0, posinf=0.0, neginf=0.0)
             keypoint_confidence = np.where(valid_keypoint, float(predictions["presence"][i, side_index]), 0.0).astype(np.float32)
             keypoints = np.column_stack((keypoint_xy, keypoint_confidence))
+            observation_meta = {"source": "mint", "hand_presence": float(predictions["presence"][i, side_index]),
+                "projection_valid": True, "confidence_type": "mint_presence_projected",
+                "mint_presence_field": predictions["presence_field"], "camera_frame": "opencv_x_right_y_down_z_forward"}
             frame["selected_for_hamer"].append({
                 "bbox_xyxy": bbox.tolist(), "vitpose_keypoints_2d": keypoints.tolist(),
                 "handedness": side, "backend_handedness": side,
                 "physical_track_id": side_index, "physical_track_fragment_id": 0,
-                "observation_meta": {"source": "mint", "hand_presence": float(predictions["presence"][i, side_index]),
-                    "projection_valid": True, "confidence_type": "mint_presence_projected",
-                    "mint_presence_field": predictions["presence_field"], "camera_frame": "opencv_x_right_y_down_z_forward"},
+                "observation_meta": observation_meta,
             })
+        frame["hands"] = frame["selected_for_hamer"]
         frames.append(frame)
     return frames
 
@@ -503,7 +505,7 @@ def compare_mint_yolo_observations(
 
 def save_mint_observation_cache(path: str | Path, frames: list[dict[str, Any]], *, image_paths: list[str | Path], mint_path: str | Path, config: Mapping[str, Any]) -> None:
     validate_mint_observations(frames, image_paths=image_paths)
-    payload = {"schema_version": MINT_OBSERVATION_SCHEMA, "source": "mint", "source_version": 1,
+    payload = {"schema_version": MINT_OBSERVATION_SCHEMA, "source": "mint", "source_version": 2,
                "image_signature": image_sequence_signature(image_paths), "mint_cache": str(Path(mint_path).resolve()),
                "mint_cache_signature": hashlib.sha256(Path(mint_path).read_bytes()).hexdigest(),
                "projection_config": dict(config), "frame_count": len(frames), "frames": frames}

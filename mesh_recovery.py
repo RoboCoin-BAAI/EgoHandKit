@@ -10,6 +10,7 @@ Given cleaned bbox data from Pass 1/2, this module:
 from pathlib import Path
 from copy import deepcopy
 import os
+import json
 import cv2
 import numpy as np
 
@@ -17,7 +18,9 @@ from hmr_backends.runners.schema import HandInstance, Pass3Inputs, BackendOutput
 from hmr_backends.runners.factory import build_runner
 from hmr_backends.utils.render_policy import build_left_hand_policy
 from hmr_backends.utils.mint_style_smoother import smooth_hand_sequence
+from hmr_backends.utils.endpoint_wrist_gate import apply_endpoint_wrist_gate
 from bbox_utils import create_video_from_images
+from pipeline_artifacts import ArtifactStore, serialize_backend_outputs
 
 
 # ---------------------------------------------------------------------------
@@ -55,7 +58,7 @@ def _collect_observation_inputs(frames, args, backend_name):
         raise ValueError(f'Cannot read image: {img_paths[0]}')
     instances, segments, by_key, last_by_track = [], [], {}, {}
     for frame in frames:
-        for observation in frame['selected_for_hamer']:
+        for observation in frame.get('hands', frame.get('selected_for_hamer', [])):
             # ViTPose handedness is retained in metadata, but HaWoR needs a
             # stable crop flip for an entire physical track.  The frontend
             # supplies a track-level side that is robust to transient flips.
@@ -74,9 +77,9 @@ def _collect_observation_inputs(frames, args, backend_name):
             inst = HandInstance(
                 frame_idx=index, img_path=frame['img_path'], hand_side=side,
                 bbox=bbox, bbox_square=np.array([*center, size, size], dtype=np.float32),
-                keypoints=np.asarray(observation['vitpose_keypoints_2d'], dtype=np.float32).copy(),
+                keypoints=np.asarray(observation.get('keypoints_2d', observation.get('vitpose_keypoints_2d')), dtype=np.float32).copy(),
                 observation_meta={
-                    'frontend': observation.get('observation_meta', {}).get('source', 'observations'),
+                    'frontend': observation.get('observation_meta', observation.get('meta', {})).get('source', 'observations'),
                     **deepcopy(observation),
                 },
             )
@@ -107,8 +110,8 @@ def _collect_inputs(raw_data, args, backend_name):
     if not raw_data:
         return Pass3Inputs(img_paths=[], image_size=(0, 0), instances=[],
                            instances_by_key={}, segments_by_hand={'left': [], 'right': []})
-    if any('selected_for_hamer' in frame for frame in raw_data):
-        if not all('selected_for_hamer' in frame for frame in raw_data):
+    if any('hands' in frame or 'selected_for_hamer' in frame for frame in raw_data):
+        if not all('hands' in frame or 'selected_for_hamer' in frame for frame in raw_data):
             raise ValueError('Cannot mix observation and legacy frontend frames')
         return _collect_observation_inputs(raw_data, args, backend_name)
     img_paths = [Path(frame['img_path']) for frame in raw_data]
@@ -262,7 +265,7 @@ def _smooth_raw_outputs(raw_outputs, backend_bundle, device, args):
 
             smoothed = smooth_hand_sequence(
                 np.stack(values), np.asarray([item.frame_idx for item in smooth_run]),
-                q=args.mint_smoother_q, r=args.mint_smoother_r, beta=args.mint_smoother_beta,
+                q=args.smoother_q, r=args.smoother_r, beta=args.smoother_beta,
             )
             for output, value in zip(smooth_run, smoothed):
                 global_orient = _rotation6d_to_matrix(value[3:9])
@@ -275,10 +278,10 @@ def _smooth_raw_outputs(raw_outputs, backend_bundle, device, args):
                 output.cam_trans = value[:3].astype(np.float32)
                 output.pred_vertices = _recompute_vertices(
                     backend_bundle.model, params, device)
-                output.raw_backend_meta["mint_style_smoother"] = {
-                    "q": float(args.mint_smoother_q),
-                    "r": float(args.mint_smoother_r),
-                    "beta": float(args.mint_smoother_beta),
+                output.raw_backend_meta["temporal_smoother"] = {
+                    "q": float(args.smoother_q),
+                    "r": float(args.smoother_r),
+                    "beta": float(args.smoother_beta),
                     "track_id": int(_track),
                     "track_fragment_id": int(_fragment),
                 }
@@ -316,7 +319,7 @@ def _render_results(raw_outputs, cleaned_data, renderer, args, out_dir, fps, lef
     by_frame = {}
     for out in raw_outputs:
         by_frame.setdefault(out.img_path, []).append(out)
-    render_dir = os.path.join(str(out_dir), f'render_{args.backend}')
+    render_dir = os.path.join(str(out_dir), 'final', 'render_frames')
     if args.render:
         os.makedirs(render_dir, exist_ok=True)
     for frame_data in cleaned_data:
@@ -368,7 +371,7 @@ def _render_results(raw_outputs, cleaned_data, renderer, args, out_dir, fps, lef
         input_img_overlay = input_img[:, :, :3] * (1 - cam_view[:, :, 3:]) + cam_view[:, :, :3] * cam_view[:, :, 3:]
         cv2.imwrite(os.path.join(render_dir, f'{img_fn}.jpg'), 255 * input_img_overlay[:, :, ::-1])
     if args.render and os.path.exists(render_dir):
-        video_path = os.path.join(str(out_dir), f'render_{args.backend}.mp4')
+        video_path = os.path.join(str(out_dir), 'final', 'render.mp4')
         create_video_from_images(render_dir, video_path, fps=fps)
 
 
@@ -410,13 +413,32 @@ def run_mesh_recovery(cleaned_data, backend_bundle, renderer, args, out_dir, fps
         renderer.focal_length = inputs.img_focal
     if not inputs.instances:
         print("No hand instances; preserving empty results and the full video timeline.")
+        if getattr(args, 'endpoint_wrist_gate', False):
+            _, pose_report = apply_endpoint_wrist_gate([], endpoint_wrist_max_deg=args.endpoint_wrist_max_deg)
+            Path(out_dir).mkdir(parents=True, exist_ok=True)
+            artifacts = ArtifactStore(out_dir)
+            artifacts.write_json(artifacts.stage_dir("50_endpoint_wrist_gate") / "report.json", pose_report)
         _render_results([], cleaned_data, renderer, args, out_dir, fps, None, backend_bundle)
         return _assemble_results([], cleaned_data)
     runner = build_runner(backend_bundle, args, device)
     left_policy = build_left_hand_policy(device=device)
     raw_outputs = runner.infer(inputs)
-    if getattr(args, 'mint_style_smoother', False):
+    artifacts = ArtifactStore(out_dir)
+    artifacts.write_pickle(artifacts.stage_dir("40_backend_raw") / "outputs.pkl", serialize_backend_outputs(raw_outputs))
+    artifacts.write_json(artifacts.stage_dir("40_backend_raw") / "summary.json", {
+        "schema_version": "egohand.backend_outputs.v1", "count": len(raw_outputs), "stage": "pre_gate_pre_smoother"})
+    if getattr(args, 'endpoint_wrist_gate', False):
+        raw_outputs, pose_report = apply_endpoint_wrist_gate(
+            raw_outputs, endpoint_wrist_max_deg=args.endpoint_wrist_max_deg)
+        Path(out_dir).mkdir(parents=True, exist_ok=True)
+        artifacts.write_pickle(artifacts.stage_dir("50_endpoint_wrist_gate") / "outputs.pkl", serialize_backend_outputs(raw_outputs))
+        artifacts.write_json(artifacts.stage_dir("50_endpoint_wrist_gate") / "report.json", pose_report)
+    if getattr(args, 'temporal_smoother', False):
         _smooth_raw_outputs(raw_outputs, backend_bundle, device, args)
+        artifacts.write_pickle(artifacts.stage_dir("60_smoother") / "outputs.pkl", serialize_backend_outputs(raw_outputs))
+        artifacts.write_json(artifacts.stage_dir("60_smoother") / "summary.json", {
+            "schema_version": "egohand.smoother.v1", "q": args.smoother_q,
+            "r": args.smoother_r, "beta": args.smoother_beta, "count": len(raw_outputs)})
     results = _assemble_results(raw_outputs, cleaned_data)
     _render_results(raw_outputs, cleaned_data, renderer, args, out_dir, fps, left_policy, backend_bundle)
 

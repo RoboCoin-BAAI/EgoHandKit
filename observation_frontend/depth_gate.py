@@ -89,7 +89,7 @@ def apply_depth_gate(
             raise ValueError(f"Cannot read image for depth gate: {image_path}")
         kept = []
         frame_diag = {"frame_idx": int(frame["frame_idx"]), "hands": {}}
-        for observation in frame.get("selected_for_hamer", []):
+        for observation in frame.get("hands", frame.get("selected_for_hamer", [])):
             side = observation["handedness"]
             hand_state = state[side]
             depth_m = _depth_for_bbox(depth_path, observation["bbox_xyxy"], image.shape[:2], unit_scale=unit_scale)
@@ -109,7 +109,7 @@ def apply_depth_gate(
                 hand_state["bad_run"] = 0
                 updated = dict(observation)
                 updated["physical_track_fragment_id"] = int(hand_state["fragment"])
-                meta = dict(updated.get("observation_meta", {}))
+                meta = dict(updated.get("observation_meta", updated.get("meta", {})))
                 meta.update({"depth_gate": "pass", "depth_m": depth_m, "depth_reference_m": reference})
                 updated["observation_meta"] = meta
                 kept.append(updated)
@@ -131,7 +131,7 @@ def apply_depth_gate(
                 "valid": True, "depth_m": depth_m, "reference_depth_m": reference,
                 "reasons": [], "fragment_id": int(hand_state["fragment"]),
             }
-        output.append({**frame, "selected_for_hamer": kept, "depth_gate": frame_diag["hands"]})
+        output.append({**frame, "selected_for_hamer": kept, "hands": kept, "depth_gate": frame_diag["hands"]})
         diagnostics.append(frame_diag)
     summary = {
         "schema_version": "depth_gate.v1", "depth_dir": str(Path(depth_dir).resolve()),

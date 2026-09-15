@@ -77,6 +77,8 @@ from bbox_utils import (
     clean_bbox_sequences,
 )
 from input_naming import sequence_name_for_input
+from pipeline_artifacts import ArtifactStore
+from observation_frontend.schema import canonical_sequence
 
 
 VIDEO_EXTS = {'.mp4', '.avi', '.mov', '.mkv', '.webm'}
@@ -134,47 +136,51 @@ def build_arg_parser():
                         help='Square padding applied to projected MINT joints before HaMeR')
     parser.add_argument('--mint_presence_threshold', type=float, default=0.5,
                         help='Minimum MINT hand presence probability to emit an observation')
-    parser.add_argument('--mint_yolo_check', action='store_true', default=False,
+    parser.add_argument('--yolo_check', action='store_true', default=False,
                         help='Run full-image YOLO as a diagnostic comparison; never replaces MINT observations')
-    parser.add_argument('--mint_yolo_iou_threshold', type=float, default=0.1,
-                        help='IoU threshold used by --mint_yolo_check')
-    parser.add_argument('--mint_style_smoother', action='store_true', default=False,
+    parser.add_argument('--yolo_check_iou_threshold', type=float, default=0.1,
+                        help='IoU threshold used by --yolo_check')
+    parser.add_argument('--temporal_smoother', action='store_true', default=False,
                         help='Apply the MINT UKF/RTS MANO smoother after HMR inference')
-    parser.add_argument('--mint_smoother_q', type=float, default=0.6,
+    parser.add_argument('--endpoint_wrist_gate', action='store_true', default=False,
+                        help='Reject only raw backend segment endpoints with an extreme wrist jump')
+    parser.add_argument('--endpoint_wrist_max_deg', type=float, default=100.0,
+                        help='Reject only raw backend segment endpoints whose wrist rotation jump to the adjacent frame exceeds this angle in degrees')
+    parser.add_argument('--smoother_q', type=float, default=0.6,
                         help='MINT-style smoother process-noise scale')
-    parser.add_argument('--mint_smoother_r', type=float, default=0.6,
+    parser.add_argument('--smoother_r', type=float, default=0.6,
                         help='MINT-style smoother observation-noise scale')
-    parser.add_argument('--mint_smoother_beta', type=float, default=2.0,
+    parser.add_argument('--smoother_beta', type=float, default=2.0,
                         help='MINT-style speed-adaptive noise scale')
-    parser.add_argument('--mint_depth_gate', action='store_true', default=False,
+    parser.add_argument('--depth_gate', action='store_true', default=False,
                         help='Reject MINT observations with invalid or implausible depth before HaMeR')
-    parser.add_argument('--mint_depth_dir', type=str, default=None,
+    parser.add_argument('--depth_dir', type=str, default=None,
                         help='Depth directory containing fast_foundation/depth_uint16_png')
-    parser.add_argument('--mint_depth_min_m', type=float, default=0.05,
+    parser.add_argument('--depth_min_m', type=float, default=0.05,
                         help='Absolute minimum valid depth for the MINT depth gate')
-    parser.add_argument('--mint_depth_max_m', type=float, default=4.0,
+    parser.add_argument('--depth_max_m', type=float, default=4.0,
                         help='Absolute maximum valid depth for the MINT depth gate')
-    parser.add_argument('--mint_depth_max_ratio', type=float, default=2.5,
+    parser.add_argument('--depth_max_ratio', type=float, default=2.5,
                         help='Maximum current/reference depth ratio')
-    parser.add_argument('--mint_depth_min_ratio', type=float, default=0.4,
+    parser.add_argument('--depth_min_ratio', type=float, default=0.4,
                         help='Minimum current/reference depth ratio')
-    parser.add_argument('--mint_depth_history', type=int, default=10,
+    parser.add_argument('--depth_history', type=int, default=10,
                         help='Number of recent valid depths used as the relative reference')
-    parser.add_argument('--mint_depth_max_bad_frames', type=int, default=2,
+    parser.add_argument('--depth_max_bad_frames', type=int, default=2,
                         help='Consecutive bad-frame budget recorded by the gate; any bad frame starts a new fragment')
-    parser.add_argument('--mint_motion_gate', action='store_true', default=False,
+    parser.add_argument('--motion_gate', action='store_true', default=False,
                         help='Reject implausible image-space jumps before HaMeR')
-    parser.add_argument('--mint_motion_center_threshold', type=float, default=0.25,
+    parser.add_argument('--motion_center_threshold', type=float, default=0.25,
                         help='Maximum bbox-center jump as a fraction of image diagonal')
-    parser.add_argument('--mint_motion_size_ratio', type=float, default=2.0,
+    parser.add_argument('--motion_size_ratio', type=float, default=2.0,
                         help='Maximum bbox area ratio for a motion-gate vote')
-    parser.add_argument('--mint_motion_iou_threshold', type=float, default=0.1,
+    parser.add_argument('--motion_iou_threshold', type=float, default=0.1,
                         help='Minimum bbox IoU for a motion-gate vote')
-    parser.add_argument('--mint_motion_joint_threshold', type=float, default=0.25,
+    parser.add_argument('--motion_joint_threshold', type=float, default=0.25,
                         help='Maximum projected-joint jump as a fraction of image diagonal')
-    parser.add_argument('--mint_motion_min_votes', type=int, default=2,
+    parser.add_argument('--motion_min_votes', type=int, default=2,
                         help='Number of failed motion tests required to reject a sample')
-    parser.add_argument('--mint_motion_reacquire_frames', type=int, default=2,
+    parser.add_argument('--motion_reacquire_frames', type=int, default=2,
                         help='Lookahead frames used to classify a persistent jump')
     parser.add_argument('--observation_all_person', action='store_true', default=False,
                         help='Observation experiment: run ViTPose on every detected person instead of the highest-score wearer')
@@ -242,24 +248,20 @@ def main():
         parser.error('--mint_bbox_scale must be positive')
     if not 0 <= args.mint_presence_threshold <= 1:
         parser.error('--mint_presence_threshold must lie in [0,1]')
-    if not 0 <= args.mint_yolo_iou_threshold <= 1:
-        parser.error('--mint_yolo_iou_threshold must lie in [0,1]')
-    if args.mint_style_smoother and args.frontend != 'mint':
-        parser.error('--mint_style_smoother currently requires --frontend mint')
-    if args.mint_depth_gate and args.frontend != 'mint':
-        parser.error('--mint_depth_gate currently requires --frontend mint')
-    if args.mint_depth_gate and not args.mint_depth_dir:
-        parser.error('--mint_depth_gate requires --mint_depth_dir')
-    if args.mint_motion_gate and args.frontend != 'mint':
-        parser.error('--mint_motion_gate currently requires --frontend mint')
-    if args.mint_motion_center_threshold <= 0 or args.mint_motion_size_ratio < 1:
-        parser.error('--mint_motion_center_threshold must be positive and --mint_motion_size_ratio must be >= 1')
-    if not 0 <= args.mint_motion_iou_threshold <= 1 or args.mint_motion_joint_threshold <= 0:
-        parser.error('--mint_motion_iou_threshold must lie in [0,1] and joint threshold must be positive')
-    if not 1 <= args.mint_motion_min_votes <= 4 or args.mint_motion_reacquire_frames < 1:
-        parser.error('--mint_motion_min_votes must be 1..4 and reacquire frames must be positive')
-    if args.mint_smoother_q <= 0 or args.mint_smoother_r <= 0 or args.mint_smoother_beta < 0:
-        parser.error('--mint_smoother_q/r must be positive and beta must be non-negative')
+    if not 0 <= args.yolo_check_iou_threshold <= 1:
+        parser.error('--yolo_check_iou_threshold must lie in [0,1]')
+    if args.endpoint_wrist_max_deg <= 0:
+        parser.error('--endpoint_wrist_max_deg must be positive')
+    if args.depth_gate and not args.depth_dir:
+        parser.error('--depth_gate requires --depth_dir')
+    if args.motion_center_threshold <= 0 or args.motion_size_ratio < 1:
+        parser.error('--motion_center_threshold must be positive and --motion_size_ratio must be >= 1')
+    if not 0 <= args.motion_iou_threshold <= 1 or args.motion_joint_threshold <= 0:
+        parser.error('--motion_iou_threshold must lie in [0,1] and joint threshold must be positive')
+    if not 1 <= args.motion_min_votes <= 4 or args.motion_reacquire_frames < 1:
+        parser.error('--motion_min_votes must be 1..4 and reacquire frames must be positive')
+    if args.smoother_q <= 0 or args.smoother_r <= 0 or args.smoother_beta < 0:
+        parser.error('--smoother_q/r must be positive and beta must be non-negative')
     if args.fps <= 0:
         parser.error('--fps must be positive')
 
@@ -276,10 +278,10 @@ def main():
     else:
         raise ValueError(f"--input must be a video file ({', '.join(VIDEO_EXTS)}) or image folder: {input_path}")
 
-    output_name = (video_name if args.frontend == 'legacy' else
-                   f'{video_name}_{args.frontend}')
+    output_name = f'{video_name}_{args.frontend}'
     out_dir = Path(args.output_root) / output_name
     out_dir.mkdir(parents=True, exist_ok=True)
+    artifacts = ArtifactStore(out_dir)
     res_path = out_dir / f'{video_name}_{args.backend}.pkl'
 
     if torch.cuda.is_available():
@@ -298,6 +300,10 @@ def main():
     print(f"Runtime device: {device}")
     print(f"Result:  {res_path}")
     print(f"{'='*60}")
+    artifacts.write_manifest({"schema_version": "egohand.run.v1", "sequence": {"name": video_name,
+        "input": str(input_path.resolve()), "fps": float(fps)},
+        "frontend": {"name": args.frontend}, "backend": {"name": args.backend},
+        "force_detect": bool(args.force_detect), "pipeline": []})
 
     if args.rescale_factor is None:
         # Unified default across hamer / htm / wilor. Users can override, e.g. --rescale_factor 1.3
@@ -316,6 +322,8 @@ def main():
     yolo_detector = None
     body_detector = None
     vitpose = None
+    depth_report = None
+    motion_report = None
 
     if need_detect:
         print(f"\nLoading YOLO hand detector: {args.yolo_model}")
@@ -377,21 +385,21 @@ def main():
             'presence_threshold': float(args.mint_presence_threshold),
             'mano_model_dir': str(Path(args.mint_mano_model_dir).resolve()) if args.mint_mano_model_dir else None,
             'projection': 'camera_frame_opencv_to_original_pixels_v1',
-            'depth_gate': bool(args.mint_depth_gate),
-            'depth_dir': str(Path(args.mint_depth_dir).resolve()) if args.mint_depth_dir else None,
-            'depth_min_m': float(args.mint_depth_min_m),
-            'depth_max_m': float(args.mint_depth_max_m),
-            'depth_max_ratio': float(args.mint_depth_max_ratio),
-            'depth_min_ratio': float(args.mint_depth_min_ratio),
-            'depth_history': int(args.mint_depth_history),
-            'depth_max_bad_frames': int(args.mint_depth_max_bad_frames),
-            'motion_gate': bool(args.mint_motion_gate),
-            'motion_center_threshold': float(args.mint_motion_center_threshold),
-            'motion_size_ratio': float(args.mint_motion_size_ratio),
-            'motion_iou_threshold': float(args.mint_motion_iou_threshold),
-            'motion_joint_threshold': float(args.mint_motion_joint_threshold),
-            'motion_min_votes': int(args.mint_motion_min_votes),
-            'motion_reacquire_frames': int(args.mint_motion_reacquire_frames),
+            'depth_gate': bool(args.depth_gate),
+            'depth_dir': str(Path(args.depth_dir).resolve()) if args.depth_dir else None,
+            'depth_min_m': float(args.depth_min_m),
+            'depth_max_m': float(args.depth_max_m),
+            'depth_max_ratio': float(args.depth_max_ratio),
+            'depth_min_ratio': float(args.depth_min_ratio),
+            'depth_history': int(args.depth_history),
+            'depth_max_bad_frames': int(args.depth_max_bad_frames),
+            'motion_gate': bool(args.motion_gate),
+            'motion_center_threshold': float(args.motion_center_threshold),
+            'motion_size_ratio': float(args.motion_size_ratio),
+            'motion_iou_threshold': float(args.motion_iou_threshold),
+            'motion_joint_threshold': float(args.motion_joint_threshold),
+            'motion_min_votes': int(args.motion_min_votes),
+            'motion_reacquire_frames': int(args.motion_reacquire_frames),
         }
         if observation_cache.exists() and not args.force_detect:
             cleaned_data = load_mint_observation_cache(
@@ -405,37 +413,37 @@ def main():
                 presence_threshold=args.mint_presence_threshold,
                 mano_model_dir=args.mint_mano_model_dir,
             )
-            if args.mint_depth_gate:
+            if args.depth_gate:
                 cleaned_data, depth_report = apply_depth_gate(
-                    cleaned_data, img_paths, args.mint_depth_dir,
-                    min_depth_m=args.mint_depth_min_m,
-                    max_depth_m=args.mint_depth_max_m,
-                    max_ratio=args.mint_depth_max_ratio,
-                    min_ratio=args.mint_depth_min_ratio,
-                    history_size=args.mint_depth_history,
-                    max_bad_frames=args.mint_depth_max_bad_frames,
+                    cleaned_data, img_paths, args.depth_dir,
+                    min_depth_m=args.depth_min_m,
+                    max_depth_m=args.depth_max_m,
+                    max_ratio=args.depth_max_ratio,
+                    min_ratio=args.depth_min_ratio,
+                    history_size=args.depth_history,
+                    max_bad_frames=args.depth_max_bad_frames,
                 )
-                (out_dir / 'mint_depth_gate.json').write_text(
+                (out_dir / 'depth_gate.json').write_text(
                     json.dumps(depth_report, indent=2) + '\n')
                 print(f"Depth gate rejected {depth_report['rejected_observations']} observations")
-            if args.mint_motion_gate:
+            if args.motion_gate:
                 cleaned_data, motion_report = apply_motion_gate(
                     cleaned_data, img_paths,
-                    center_jump_threshold=args.mint_motion_center_threshold,
-                    size_ratio_threshold=args.mint_motion_size_ratio,
-                    iou_threshold=args.mint_motion_iou_threshold,
-                    joint_jump_threshold=args.mint_motion_joint_threshold,
-                    min_bad_votes=args.mint_motion_min_votes,
-                    reacquire_frames=args.mint_motion_reacquire_frames,
+                    center_jump_threshold=args.motion_center_threshold,
+                    size_ratio_threshold=args.motion_size_ratio,
+                    iou_threshold=args.motion_iou_threshold,
+                    joint_jump_threshold=args.motion_joint_threshold,
+                    min_bad_votes=args.motion_min_votes,
+                    reacquire_frames=args.motion_reacquire_frames,
                 )
-                (out_dir / 'mint_motion_gate.json').write_text(
+                (out_dir / 'motion_gate.json').write_text(
                     json.dumps(motion_report, indent=2) + '\n')
                 print(f"Motion gate rejected {motion_report['counts']['rejected']} observations")
             save_mint_observation_cache(
                 observation_cache, cleaned_data,
                 image_paths=img_paths, mint_path=mint_cache, config=mint_config)
             print(f"MINT observations cached to {observation_cache}")
-        if args.mint_yolo_check:
+        if args.yolo_check:
             from observation_frontend.mint_adapter import compare_mint_yolo_observations
             print(f"\nRunning YOLO diagnostic check with {args.yolo_model}")
             if yolo_detector is None:
@@ -444,11 +452,12 @@ def main():
             yolo_frames = extract_raw_bboxes(img_paths, yolo_detector, vis_dir=None, fps=fps)
             yolo_report = compare_mint_yolo_observations(
                 cleaned_data, yolo_frames,
-                iou_threshold=args.mint_yolo_iou_threshold,
+                iou_threshold=args.yolo_check_iou_threshold,
             )
-            (out_dir / 'mint_yolo_check.json').write_text(
-                json.dumps(yolo_report, indent=2) + '\n')
-            print(f"MINT/YOLO diagnostic saved to {out_dir / 'mint_yolo_check.json'}")
+            yolo_stage = artifacts.stage_dir("30_yolo_check")
+            artifacts.write_json(yolo_stage / 'report.json', {**yolo_report, "decision_effect": "none",
+                "schema_version": "egohand.yolo_check.v1"})
+            print(f"YOLO diagnostic saved to {yolo_stage / 'report.json'}")
             print(f"YOLO check counts: {yolo_report['counts']}")
     elif pass1_cache.exists() and not args.force_detect:
         print(f"\nLoading cached Pass 1 results from {pass1_cache}")
@@ -475,6 +484,48 @@ def main():
             vis_dir=pass2_vis_dir, fps=fps,
         )
 
+    # Apply optional frontend-independent gates for non-MINT adapters.  The
+    # MINT branch applies these while building its observation cache.
+    if args.frontend != 'mint' and (args.depth_gate or args.motion_gate):
+        from observation_frontend.depth_gate import apply_depth_gate
+        from observation_frontend.motion_gate import apply_motion_gate
+        if args.depth_gate:
+            cleaned_data, depth_report = apply_depth_gate(
+                cleaned_data, img_paths, args.depth_dir, min_depth_m=args.depth_min_m,
+                max_depth_m=args.depth_max_m, max_ratio=args.depth_max_ratio,
+                min_ratio=args.depth_min_ratio, history_size=args.depth_history,
+                max_bad_frames=args.depth_max_bad_frames)
+        if args.motion_gate:
+            cleaned_data, motion_report = apply_motion_gate(
+                cleaned_data, img_paths, center_jump_threshold=args.motion_center_threshold,
+                size_ratio_threshold=args.motion_size_ratio, iou_threshold=args.motion_iou_threshold,
+                joint_jump_threshold=args.motion_joint_threshold, min_bad_votes=args.motion_min_votes,
+                reacquire_frames=args.motion_reacquire_frames)
+
+    # Persist the stable frontend boundary artifact.  Runtime legacy fields are
+    # accepted by the adapter, but downstream consumers can inspect this file
+    # without knowing which frontend produced it.
+    canonical = canonical_sequence(cleaned_data, sequence_name=video_name, fps=fps, frontend=args.frontend)
+    frontend_stage = artifacts.stage_dir("00_frontend")
+    artifacts.write_pickle(frontend_stage / "observations.pkl", canonical)
+    artifacts.write_json(frontend_stage / "summary.json", {"schema_version": "egohand.observations.v1",
+        "frame_count": len(canonical["frames"]), "frontend": args.frontend,
+        "loaded_from_cache": bool(not args.force_detect)})
+    if args.depth_gate:
+        depth_stage = artifacts.stage_dir("10_depth_gate")
+        artifacts.write_pickle(depth_stage / "observations.pkl", canonical)
+        artifacts.write_json(depth_stage / "report.json", depth_report or {"schema_version": "egohand.depth_gate.v1", "enabled": True})
+    if args.motion_gate:
+        motion_stage = artifacts.stage_dir("20_motion_gate")
+        artifacts.write_pickle(motion_stage / "observations.pkl", canonical)
+        artifacts.write_json(motion_stage / "report.json", motion_report or {"schema_version": "egohand.motion_gate.v1", "enabled": True})
+    manifest = {"schema_version": "egohand.run.v1", "sequence": {"name": video_name,
+        "input": str(input_path.resolve()), "frame_count": len(img_paths), "fps": float(fps)},
+        "frontend": {"name": args.frontend}, "backend": {"name": args.backend},
+        "force_detect": bool(args.force_detect), "pipeline": [{"name": "frontend", "enabled": True,
+            "artifact": "stages/00_frontend/observations.pkl"}]}
+    artifacts.write_manifest(manifest)
+
     # Frontend models are no longer needed while reconstructing hand crops.
     del yolo_detector, body_detector, vitpose
     gc.collect()
@@ -487,6 +538,41 @@ def main():
 
     # Pass 3 - MESH RECOVERY
     results = run_mesh_recovery(cleaned_data, backend_bundle, renderer, args, out_dir=out_dir, fps=fps, device=device)
+
+    final_dir = artifacts.final
+    final_frames = []
+    for frame in canonical["frames"]:
+        output = results.get(frame["img_path"], {})
+        hands = []
+        for index, mano in enumerate(output.get("mano", [])):
+            hands.append({"track_id": int(output.get("tracked_ids", [])[index]),
+                "fragment_id": 0, "handedness": "right" if int(output.get("tracked_ids", [])[index]) else "left",
+                "backend_handedness": "right" if int(output.get("tracked_ids", [])[index]) else "left",
+                "mano": mano, "cam_trans": output.get("cam_trans", [])[index],
+                "keypoints_2d": output.get("extra_data", [])[index], "meta": output.get("backend_meta", [])[index]})
+        final_frames.append({"frame_idx": frame["frame_idx"], "img_path": frame["img_path"],
+            "timestamp_ns": frame.get("timestamp_ns"), "hands": hands})
+    final_payload = {"schema_version": "egohand.results.v1", "sequence": canonical["sequence"],
+        "frontend": args.frontend, "backend": args.backend,
+        "coordinate_system": {"image": "original_pixels", "camera": "opencv_x_right_y_down_z_forward"},
+        "frames": final_frames, "summary": {"frame_count": len(final_frames),
+            "hand_instance_count": sum(len(frame["hands"]) for frame in final_frames),
+            "hands_by_side": {"left": sum(1 for frame in final_frames for hand in frame["hands"] if hand["handedness"] == "left"),
+                               "right": sum(1 for frame in final_frames for hand in frame["hands"] if hand["handedness"] == "right")}}}
+    artifacts.write_pickle(final_dir / "results.pkl", final_payload)
+    artifacts.write_json(final_dir / "summary.json", {"schema_version": "egohand.summary.v1", **final_payload["summary"],
+        "frontend": {"name": args.frontend}, "backend": args.backend})
+    manifest["pipeline"].extend([
+        {"name": "depth_gate", "enabled": bool(args.depth_gate), "artifact": "stages/10_depth_gate/observations.pkl" if args.depth_gate else None},
+        {"name": "motion_gate", "enabled": bool(args.motion_gate), "artifact": "stages/20_motion_gate/observations.pkl" if args.motion_gate else None},
+        {"name": "yolo_check", "enabled": bool(args.yolo_check), "artifact": "stages/30_yolo_check/report.json" if args.yolo_check else None},
+        {"name": "backend_raw", "enabled": True, "artifact": "stages/40_backend_raw/outputs.pkl"},
+        {"name": "endpoint_wrist_gate", "enabled": bool(args.endpoint_wrist_gate), "artifact": "stages/50_endpoint_wrist_gate/outputs.pkl" if args.endpoint_wrist_gate else None},
+        {"name": "temporal_smoother", "enabled": bool(args.temporal_smoother), "artifact": "stages/60_smoother/outputs.pkl" if args.temporal_smoother else None},
+    ])
+    manifest["final_artifacts"] = {"results": "final/results.pkl", "summary": "final/summary.json",
+        "render": "final/render.mp4" if args.render else None}
+    artifacts.write_manifest(manifest)
 
     with open(res_path, 'wb') as f:
         pickle.dump(results, f)
