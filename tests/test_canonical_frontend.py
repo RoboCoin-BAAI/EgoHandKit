@@ -151,6 +151,54 @@ def test_canonical_cli_argument_rules():
         ]))
 
 
+def test_downstream_stages_accept_non_mint_source_frontend(tmp_path, monkeypatch):
+    import run
+
+    current_paths = _images(tmp_path / "input", count=3)
+    artifact = tmp_path / "observations.pkl"
+    save_observation_sequence(
+        _sequence(_images(tmp_path / "previous", count=3), frontend="mediapipe"), artifact
+    )
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    forbidden = Mock(side_effect=AssertionError("detector must not run"))
+    monkeypatch.setattr(run, "YOLO", forbidden)
+    model = Mock()
+    model.to.return_value = model
+    monkeypatch.setattr(
+        run,
+        "load_backend",
+        lambda backend, *_args: SimpleNamespace(
+            model=model, render_cfg=Mock(), backend_name=backend
+        ),
+    )
+    monkeypatch.setattr(run, "Renderer", Mock())
+    seen = []
+
+    def reconstruct(frames, backend_bundle, *_args, **_kwargs):
+        seen.append(deepcopy(frames))
+        return {frame["img_path"]: {"mano": []} for frame in frames}
+
+    monkeypatch.setattr(run, "run_mesh_recovery", reconstruct)
+    monkeypatch.setattr("sys.argv", [
+        "run.py", "--input", str(current_paths[0].parent), "--frontend", "canonical",
+        "--observations", str(artifact), "--backend", "hamer", "--motion_gate",
+        "--output_root", str(tmp_path / "output"),
+    ])
+    run.main()
+
+    assert seen and all("hands" in frame for frame in seen[0])
+    run_dir = tmp_path / "output" / "input_canonical"
+    motion_stage = run_dir / "stages/20_motion_gate/observations.pkl"
+    assert motion_stage.is_file()
+    gated = load_observation_sequence(motion_stage)
+    assert gated["frontend"]["name"] == "mediapipe"
+    manifest = json.loads((run_dir / "run_manifest.json").read_text())
+    assert manifest["frontend"]["source_frontend"] == "mediapipe"
+    summary = json.loads((run_dir / "final/summary.json").read_text())
+    assert summary["frontend"]["name"] == "canonical"
+    forbidden.assert_not_called()
+
+
 def test_stage_zero_artifact_reaches_hamer_then_hawor_without_detector(tmp_path, monkeypatch):
     import run
 

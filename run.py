@@ -200,7 +200,7 @@ def build_arg_parser():
                         help='Optional penalty for high-cost continued track assignments')
     parser.add_argument('--output_root', type=str, default='test_data/hand_proc',
                         help='Root directory for outputs. Default: test_data/hand_proc')
-    parser.add_argument('--fps', type=int, default=15,
+    parser.add_argument('--fps', type=float, default=15.0,
                         help='FPS for output visualization videos (only used for image folder input; video input auto-uses native FPS)')
     parser.add_argument('--render', dest='render', action='store_true', default=True,
                         help='If set, render mesh overlay results')
