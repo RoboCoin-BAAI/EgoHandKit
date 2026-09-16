@@ -31,17 +31,17 @@ class MeshRenderTimingTests(unittest.TestCase):
             with patch('mesh_recovery.create_video_from_images') as create_video:
                 _render_results([output], cleaned, renderer, args, root, 30, policy, bundle)
             self.assertEqual(
-                sorted(path.name for path in (root / 'render_hawor').glob('*.jpg')),
+                sorted(path.name for path in (root / 'final' / 'render_frames').glob('*.jpg')),
                 [path.name for path in image_paths],
             )
             for index in (0, 2):
                 np.testing.assert_array_equal(
-                    cv2.imread(str(root / 'render_hawor' / image_paths[index].name)),
+                    cv2.imread(str(root / 'final' / 'render_frames' / image_paths[index].name)),
                     cv2.imread(str(image_paths[index])),
                 )
             renderer.render_rgba_multiple.assert_called_once()
             create_video.assert_called_once_with(
-                str(root / 'render_hawor'), str(root / 'render_hawor.mp4'), fps=30,
+                str(root / 'final' / 'render_frames'), str(root / 'final' / 'render.mp4'), fps=30,
             )
 
     def test_disabled_render_does_not_write_frames(self):
@@ -50,7 +50,7 @@ class MeshRenderTimingTests(unittest.TestCase):
             args = SimpleNamespace(backend='hawor', render=False)
             with patch('mesh_recovery.create_video_from_images') as create_video:
                 _render_results([], [], Mock(), args, root, 30, Mock(), Mock())
-            self.assertFalse((root / 'render_hawor').exists())
+            self.assertFalse((root / 'final' / 'render_frames').exists())
             create_video.assert_not_called()
 
 

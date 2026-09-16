@@ -20,7 +20,9 @@ def observation(track=0, side='left', fragment=0, candidate=0):
         'physical_track_fragment_id': fragment, 'handedness': side,
         'dominant_track_handedness': 'right',
         'bbox_xyxy': [10 + track * 50, 20, 40 + track * 50, 60],
-        'vitpose_keypoints_2d': [[20 + track * 50, 30, 0.9]] * 21,
+        'observation_id': f'{track}:{fragment}:{candidate}',
+        'keypoints_2d': [[20 + track * 50, 30, 0.9]] * 21,
+        'confidence': 0.9, 'source': 'observations', 'meta': {},
     }
 
 
@@ -29,7 +31,7 @@ def make_frames(tmp_path, observations):
     for i, selected in enumerate(observations):
         path = tmp_path / f'{i:06d}.jpg'
         assert cv2.imwrite(str(path), np.full((100, 160, 3), 80, np.uint8))
-        frames.append({'frame_idx': i, 'img_path': str(path), 'selected_for_hamer': selected})
+        frames.append({'frame_idx': i, 'img_path': str(path), 'timestamp_ns': None, 'hands': selected})
     return frames
 
 
@@ -95,10 +97,10 @@ def test_track_side_gap_and_fragment_boundaries_preserve_observations(tmp_path):
         [0, 1], [0, 1], [2], [4], [5],
     ]
     for inst in inputs.instances:
-        source = next(item for item in frames[inst.frame_idx]['selected_for_hamer']
+        source = next(item for item in frames[inst.frame_idx]['hands']
                       if item['physical_track_id'] == inst.observation_meta['physical_track_id'])
         np.testing.assert_array_equal(inst.bbox, source['bbox_xyxy'])
-        np.testing.assert_allclose(inst.keypoints, source['vitpose_keypoints_2d'])
+        np.testing.assert_allclose(inst.keypoints, source['keypoints_2d'])
         assert inst.hand_side == source['handedness']
     assert frames == original
 

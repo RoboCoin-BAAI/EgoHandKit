@@ -12,6 +12,7 @@ from observation_frontend.mint_adapter import (
     validate_mint_observations,
     write_synthetic_mint_fixture,
 )
+from observation_frontend.schema import canonical_sequence, validate_observation_sequence
 
 
 def _images(tmp_path, count=2, hw=(100, 160)):
@@ -117,3 +118,20 @@ def test_yolo_check_is_diagnostic_only():
     assert report["counts"]["match"] == 1
     assert report["frames"][0]["sides"]["left"]["status"] == "match"
     assert report["frames"][0]["sides"]["right"]["status"] == "both_missing"
+
+
+def test_mint_adapter_converges_to_canonical_stage_zero_contract(tmp_path):
+    paths = _images(tmp_path, 2)
+    points = np.zeros((2, 21, 3), dtype=np.float32)
+    points[..., 0] = np.linspace(-0.3, 0.3, 21)
+    points[..., 1] = np.linspace(-0.2, 0.2, 21)
+    points[..., 2] = 2.0
+    frames = build_mint_observations(load_mint_predictions(_cache(tmp_path, points=points)), paths)
+
+    sequence = canonical_sequence(
+        frames, sequence_name="mint-sequence", fps=15.0, frontend="mint"
+    )
+
+    validate_observation_sequence(sequence)
+    assert sequence["frontend"]["name"] == "mint"
+    assert all("hands" in frame and "selected_for_hamer" not in frame for frame in sequence["frames"])

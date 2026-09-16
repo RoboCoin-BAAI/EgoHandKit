@@ -79,19 +79,27 @@ def apply_depth_gate(
     depth_paths = resolve_depth_frames(depth_dir, len(frames))
     output = []
     diagnostics = []
-    state = {
-        "left": {"history": deque(maxlen=history_size), "bad_run": 0, "fragment": 0, "lost": False},
-        "right": {"history": deque(maxlen=history_size), "bad_run": 0, "fragment": 0, "lost": False},
-    }
+    state = {}
     for frame_index, (frame, image_path, depth_path) in enumerate(zip(frames, image_paths, depth_paths)):
         image = cv2.imread(str(image_path), cv2.IMREAD_UNCHANGED)
         if image is None:
             raise ValueError(f"Cannot read image for depth gate: {image_path}")
         kept = []
         frame_diag = {"frame_idx": int(frame["frame_idx"]), "hands": {}}
-        for observation in frame.get("hands", frame.get("selected_for_hamer", [])):
+        for observation in frame["hands"]:
             side = observation["handedness"]
-            hand_state = state[side]
+            track = int(observation["physical_track_id"])
+            source_fragment = int(observation["physical_track_fragment_id"])
+            hand_state = state.setdefault(
+                (track, side),
+                {"history": deque(maxlen=history_size), "bad_run": 0,
+                 "fragment": source_fragment, "source_fragment": source_fragment, "lost": False},
+            )
+            if source_fragment != hand_state["source_fragment"]:
+                hand_state.update(fragment=source_fragment, source_fragment=source_fragment,
+                                  bad_run=0, lost=False)
+                hand_state["history"].clear()
+            diagnostic_key = side if side not in frame_diag["hands"] else f"{side}:{track}"
             depth_m = _depth_for_bbox(depth_path, observation["bbox_xyxy"], image.shape[:2], unit_scale=unit_scale)
             reference = float(np.median(hand_state["history"])) if hand_state["history"] else None
             reasons = []
@@ -109,9 +117,9 @@ def apply_depth_gate(
                 hand_state["bad_run"] = 0
                 updated = dict(observation)
                 updated["physical_track_fragment_id"] = int(hand_state["fragment"])
-                meta = dict(updated.get("observation_meta", updated.get("meta", {})))
+                meta = dict(updated.get("meta", {}))
                 meta.update({"depth_gate": "pass", "depth_m": depth_m, "depth_reference_m": reference})
-                updated["observation_meta"] = meta
+                updated["meta"] = meta
                 kept.append(updated)
             else:
                 hand_state["bad_run"] += 1
@@ -122,16 +130,16 @@ def apply_depth_gate(
                     hand_state["fragment"] += 1
                     hand_state["lost"] = True
                 hand_state["history"].clear()
-                frame_diag["hands"][side] = {
+                frame_diag["hands"][diagnostic_key] = {
                     "valid": False, "depth_m": depth_m, "reference_depth_m": reference,
                     "reasons": reasons, "fragment_id": int(hand_state["fragment"]),
                 }
                 continue
-            frame_diag["hands"][side] = {
+            frame_diag["hands"][diagnostic_key] = {
                 "valid": True, "depth_m": depth_m, "reference_depth_m": reference,
                 "reasons": [], "fragment_id": int(hand_state["fragment"]),
             }
-        output.append({**frame, "selected_for_hamer": kept, "hands": kept, "depth_gate": frame_diag["hands"]})
+        output.append({**frame, "hands": kept, "depth_gate": frame_diag["hands"]})
         diagnostics.append(frame_diag)
     summary = {
         "schema_version": "depth_gate.v1", "depth_dir": str(Path(depth_dir).resolve()),

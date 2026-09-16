@@ -30,3 +30,69 @@ stage artifacts under `stages/`, and versioned final files under `final/`.
 including frames whose `hands` list is empty. New frontends only need to
 implement the canonical observation adapter; no downstream algorithm changes
 are required.
+
+## Using an External Frontend
+
+An external vision model can write one `egohand.observations.v1` artifact and
+leave detection, tracking, and handedness decisions entirely outside
+EgoHandKit:
+
+```text
+External model -> egohand.observations.v1 -> EgoHandKit canonical input
+               -> Depth / Motion / HMR / Endpoint / Smoother
+```
+
+The minimal Python shape is:
+
+```python
+import numpy as np
+
+from observation_frontend.schema import save_observation_sequence
+
+sequence = {
+    "schema_version": "egohand.observations.v1",
+    "sequence": {
+        "sequence_name": "clip",
+        "frame_count": 1,
+        "fps": 30.0,
+        "image_width": 1920,
+        "image_height": 1080,
+    },
+    "frontend": {"name": "custom", "version": "1.0"},
+    "frames": [{
+        "frame_idx": 0,
+        "img_path": "/exported/frames/000000.jpg",
+        "timestamp_ns": None,
+        "hands": [{
+            "observation_id": "left-0",
+            "handedness": "left",
+            "backend_handedness": "left",
+            "bbox_xyxy": [100.0, 120.0, 420.0, 520.0],
+            "keypoints_2d": np.zeros((21, 3), dtype=np.float32),
+            "physical_track_id": 0,
+            "physical_track_fragment_id": 0,
+            "confidence": 0.95,
+            "source": "custom",
+            "meta": {},
+        }],
+    }],
+}
+save_observation_sequence(sequence, "observations.pkl")
+```
+
+Consume it directly with:
+
+```bash
+python run.py \
+  --input /path/to/video.mp4 \
+  --frontend canonical \
+  --observations observations.pkl \
+  --backend hamer \
+  --output_root /path/to/output
+```
+
+The loader validates the canonical schema, frame count, ordered frame indices,
+resolution, and FPS. Since extracted-frame directories can differ between
+runs, `frame_idx` is the stable identity and each validated `img_path` is
+remapped to the current input frame. The current run writes that remapped
+sequence to `stages/00_frontend/observations.pkl`.

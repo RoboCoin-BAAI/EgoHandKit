@@ -460,7 +460,7 @@ def compare_mint_yolo_observations(
     for mint_frame, yolo_frame in zip(mint_frames, yolo_frames):
         by_side = {
             item["handedness"]: item
-            for item in mint_frame.get("selected_for_hamer", [])
+            for item in mint_frame.get("hands", mint_frame.get("selected_for_hamer", []))
         }
         frame_rows = {"frame_idx": int(mint_frame["frame_idx"]), "sides": {}}
         for side in ("left", "right"):

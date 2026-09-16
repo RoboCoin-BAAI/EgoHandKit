@@ -29,12 +29,18 @@ def _frames(count: int) -> list[dict]:
         {
             "frame_idx": index,
             "img_path": f"image_{index:06d}.jpg",
-            "selected_for_hamer": [
+            "hands": [
                 {
+                    "observation_id": f"right-{index}",
                     "bbox_xyxy": [10, 10, 30, 30],
+                    "keypoints_2d": np.zeros((21, 3), dtype=np.float32),
                     "handedness": "right",
+                    "backend_handedness": "right",
                     "physical_track_id": 1,
-                    "observation_meta": {"source": "mint"},
+                    "physical_track_fragment_id": 0,
+                    "confidence": 1.0,
+                    "source": "mint",
+                    "meta": {},
                 }
             ],
         }
@@ -49,10 +55,10 @@ def test_depth_gate_rejects_outlier_and_starts_new_fragment(tmp_path):
         _frames(3), images, depth_root, max_depth_m=4.0, max_ratio=2.0
     )
 
-    assert [len(frame["selected_for_hamer"]) for frame in gated] == [1, 0, 1]
-    assert gated[0]["selected_for_hamer"][0]["physical_track_fragment_id"] == 0
-    assert gated[2]["selected_for_hamer"][0]["physical_track_fragment_id"] == 1
-    assert gated[2]["selected_for_hamer"][0]["observation_meta"]["depth_m"] == 0.5
+    assert [len(frame["hands"]) for frame in gated] == [1, 0, 1]
+    assert gated[0]["hands"][0]["physical_track_fragment_id"] == 0
+    assert gated[2]["hands"][0]["physical_track_fragment_id"] == 1
+    assert gated[2]["hands"][0]["meta"]["depth_m"] == 0.5
     assert report["rejected_observations"] == 1
     assert report["frames"][1]["hands"]["right"]["reasons"] == ["relative_depth_jump"]
 
@@ -61,7 +67,7 @@ def test_depth_gate_rejects_absolute_limit_and_missing_frame_is_explicit(tmp_pat
     depth_root = _write_depth_sequence(tmp_path / "depth", [500, 5000])
     images = _images(tmp_path, 2)
     gated, report = apply_depth_gate(_frames(2), images, depth_root, max_depth_m=4.0)
-    assert [len(frame["selected_for_hamer"]) for frame in gated] == [1, 0]
+    assert [len(frame["hands"]) for frame in gated] == [1, 0]
     assert report["frames"][1]["hands"]["right"]["reasons"] == ["absolute_depth_limit"]
 
     missing_root = tmp_path / "missing"

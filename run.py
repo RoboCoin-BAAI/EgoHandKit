@@ -23,7 +23,6 @@ Hand overlays are the default. Use --omega_world to opt into world recovery.
 from pathlib import Path
 import argparse
 import gc
-import json
 import os
 import shutil
 import sys
@@ -78,7 +77,14 @@ from bbox_utils import (
 )
 from input_naming import sequence_name_for_input
 from pipeline_artifacts import ArtifactStore
-from observation_frontend.schema import canonical_sequence
+from observation_frontend.schema import (
+    OBSERVATION_SCHEMA,
+    canonical_sequence,
+    load_observation_sequence,
+    remap_observation_sequence,
+    save_observation_sequence,
+    validate_observation_sequence,
+)
 
 
 VIDEO_EXTS = {'.mp4', '.avi', '.mov', '.mkv', '.webm'}
@@ -126,8 +132,10 @@ def build_arg_parser():
                         help='Output/cache sequence name. Defaults to session_camera for dataset videos')
     parser.add_argument('--backend', type=str, default='hawor', choices=['hamer', 'htm', 'wilor', 'hawor'],
                         help='Backend model to use (hamer, htm, wilor, or hawor)')
-    parser.add_argument('--frontend', choices=['legacy', 'observations', 'mint'], default='legacy',
-                        help='Legacy YOLO/cleanup, ViTPose observations, or an external MINT prediction cache')
+    parser.add_argument('--frontend', choices=['legacy', 'observations', 'mint', 'canonical'], default='legacy',
+                        help='Legacy YOLO/cleanup, ViTPose, MINT, or canonical observations')
+    parser.add_argument('--observations', type=str, default=None,
+                        help='Canonical egohand.observations.v1 pickle; required with --frontend canonical')
     parser.add_argument('--mint_predictions', type=str, default=None,
                         help='External MINT prediction cache (.npz); required with --frontend mint')
     parser.add_argument('--mint_mano_model_dir', type=str, default=None,
@@ -233,17 +241,19 @@ def build_arg_parser():
     return parser
 
 
-def main():
-    parser = build_arg_parser()
-    args = parser.parse_args()
+def validate_cli_args(parser, args):
     if args.frontend == 'observations' and (args.use_vitpose or args.no_clean_bbox):
         parser.error('--frontend observations replaces legacy detection/cleanup; omit --use_vitpose and --no_clean_bbox')
-    if args.frontend == 'mint' and (args.use_vitpose or args.no_clean_bbox):
-        parser.error('--frontend mint consumes external predictions; omit --use_vitpose and --no_clean_bbox')
+    if args.frontend in {'mint', 'canonical'} and (args.use_vitpose or args.no_clean_bbox):
+        parser.error(f'--frontend {args.frontend} consumes external observations; omit --use_vitpose and --no_clean_bbox')
     if args.frontend == 'mint' and not args.mint_predictions:
         parser.error('--frontend mint requires --mint_predictions /path/to/mint_predictions.npz')
     if args.frontend != 'mint' and args.mint_predictions:
         parser.error('--mint_predictions is only valid with --frontend mint')
+    if args.frontend == 'canonical' and not args.observations:
+        parser.error('--frontend canonical requires --observations /path/to/observations.pkl')
+    if args.frontend != 'canonical' and args.observations:
+        parser.error('--observations is only valid with --frontend canonical')
     if args.mint_bbox_scale <= 0:
         parser.error('--mint_bbox_scale must be positive')
     if not 0 <= args.mint_presence_threshold <= 1:
@@ -264,6 +274,12 @@ def main():
         parser.error('--smoother_q/r must be positive and beta must be non-negative')
     if args.fps <= 0:
         parser.error('--fps must be positive')
+    return args
+
+
+def main():
+    parser = build_arg_parser()
+    args = validate_cli_args(parser, parser.parse_args())
 
     input_path = Path(args.input)
     if input_path.is_file() and input_path.suffix.lower() in VIDEO_EXTS:
@@ -344,7 +360,16 @@ def main():
             from vitpose_model import ViTPoseModel
             vitpose = ViTPoseModel(repo_root, device)
 
-    if args.frontend == 'observations':
+    if args.frontend == 'canonical':
+        source_path = Path(args.observations)
+        canonical = remap_observation_sequence(
+            load_observation_sequence(source_path),
+            img_paths,
+            fps=fps,
+            sequence_name=video_name,
+        )
+        print(f"Loaded canonical observations from {source_path}")
+    elif args.frontend == 'observations':
         from observation_frontend.adapter import run_observation_frontend
         from observation_frontend.physical_hand_temporal_association import (
             DEFAULT_CONFIG as DEFAULT_ASSOCIATION_CONFIG,
@@ -370,8 +395,6 @@ def main():
             load_mint_predictions,
             save_mint_observation_cache,
         )
-        from observation_frontend.depth_gate import apply_depth_gate
-        from observation_frontend.motion_gate import apply_motion_gate
         mint_cache = Path(args.mint_predictions)
         if not mint_cache.is_file():
             raise FileNotFoundError(f"MINT prediction cache does not exist: {mint_cache}")
@@ -385,21 +408,6 @@ def main():
             'presence_threshold': float(args.mint_presence_threshold),
             'mano_model_dir': str(Path(args.mint_mano_model_dir).resolve()) if args.mint_mano_model_dir else None,
             'projection': 'camera_frame_opencv_to_original_pixels_v1',
-            'depth_gate': bool(args.depth_gate),
-            'depth_dir': str(Path(args.depth_dir).resolve()) if args.depth_dir else None,
-            'depth_min_m': float(args.depth_min_m),
-            'depth_max_m': float(args.depth_max_m),
-            'depth_max_ratio': float(args.depth_max_ratio),
-            'depth_min_ratio': float(args.depth_min_ratio),
-            'depth_history': int(args.depth_history),
-            'depth_max_bad_frames': int(args.depth_max_bad_frames),
-            'motion_gate': bool(args.motion_gate),
-            'motion_center_threshold': float(args.motion_center_threshold),
-            'motion_size_ratio': float(args.motion_size_ratio),
-            'motion_iou_threshold': float(args.motion_iou_threshold),
-            'motion_joint_threshold': float(args.motion_joint_threshold),
-            'motion_min_votes': int(args.motion_min_votes),
-            'motion_reacquire_frames': int(args.motion_reacquire_frames),
         }
         if observation_cache.exists() and not args.force_detect:
             cleaned_data = load_mint_observation_cache(
@@ -413,52 +421,10 @@ def main():
                 presence_threshold=args.mint_presence_threshold,
                 mano_model_dir=args.mint_mano_model_dir,
             )
-            if args.depth_gate:
-                cleaned_data, depth_report = apply_depth_gate(
-                    cleaned_data, img_paths, args.depth_dir,
-                    min_depth_m=args.depth_min_m,
-                    max_depth_m=args.depth_max_m,
-                    max_ratio=args.depth_max_ratio,
-                    min_ratio=args.depth_min_ratio,
-                    history_size=args.depth_history,
-                    max_bad_frames=args.depth_max_bad_frames,
-                )
-                (out_dir / 'depth_gate.json').write_text(
-                    json.dumps(depth_report, indent=2) + '\n')
-                print(f"Depth gate rejected {depth_report['rejected_observations']} observations")
-            if args.motion_gate:
-                cleaned_data, motion_report = apply_motion_gate(
-                    cleaned_data, img_paths,
-                    center_jump_threshold=args.motion_center_threshold,
-                    size_ratio_threshold=args.motion_size_ratio,
-                    iou_threshold=args.motion_iou_threshold,
-                    joint_jump_threshold=args.motion_joint_threshold,
-                    min_bad_votes=args.motion_min_votes,
-                    reacquire_frames=args.motion_reacquire_frames,
-                )
-                (out_dir / 'motion_gate.json').write_text(
-                    json.dumps(motion_report, indent=2) + '\n')
-                print(f"Motion gate rejected {motion_report['counts']['rejected']} observations")
             save_mint_observation_cache(
                 observation_cache, cleaned_data,
                 image_paths=img_paths, mint_path=mint_cache, config=mint_config)
             print(f"MINT observations cached to {observation_cache}")
-        if args.yolo_check:
-            from observation_frontend.mint_adapter import compare_mint_yolo_observations
-            print(f"\nRunning YOLO diagnostic check with {args.yolo_model}")
-            if yolo_detector is None:
-                yolo_detector = YOLO(args.yolo_model)
-                yolo_detector.to(device)
-            yolo_frames = extract_raw_bboxes(img_paths, yolo_detector, vis_dir=None, fps=fps)
-            yolo_report = compare_mint_yolo_observations(
-                cleaned_data, yolo_frames,
-                iou_threshold=args.yolo_check_iou_threshold,
-            )
-            yolo_stage = artifacts.stage_dir("30_yolo_check")
-            artifacts.write_json(yolo_stage / 'report.json', {**yolo_report, "decision_effect": "none",
-                "schema_version": "egohand.yolo_check.v1"})
-            print(f"YOLO diagnostic saved to {yolo_stage / 'report.json'}")
-            print(f"YOLO check counts: {yolo_report['counts']}")
     elif pass1_cache.exists() and not args.force_detect:
         print(f"\nLoading cached Pass 1 results from {pass1_cache}")
         with open(pass1_cache, 'rb') as f:
@@ -484,44 +450,80 @@ def main():
             vis_dir=pass2_vis_dir, fps=fps,
         )
 
-    # Apply optional frontend-independent gates for non-MINT adapters.  The
-    # MINT branch applies these while building its observation cache.
-    if args.frontend != 'mint' and (args.depth_gate or args.motion_gate):
+    if args.frontend != 'canonical':
+        canonical = canonical_sequence(
+            cleaned_data, sequence_name=video_name, fps=fps, frontend=args.frontend
+        )
+    validate_observation_sequence(canonical)
+
+    source_frontend = canonical["frontend"]["name"]
+    frontend_stage = artifacts.stage_dir("00_frontend")
+    save_observation_sequence(canonical, frontend_stage / "observations.pkl")
+    frontend_summary = {
+        "schema_version": OBSERVATION_SCHEMA,
+        "frontend_mode": args.frontend,
+        "source_frontend": source_frontend,
+        "loaded_from": str(Path(args.observations).resolve()) if args.observations else None,
+        "frame_count": len(canonical["frames"]),
+        "hand_instance_count": sum(len(frame["hands"]) for frame in canonical["frames"]),
+    }
+    artifacts.write_json(frontend_stage / "summary.json", frontend_summary)
+
+    if args.yolo_check:
+        from observation_frontend.mint_adapter import compare_mint_yolo_observations
+        print(f"\nRunning YOLO diagnostic check with {args.yolo_model}")
+        if yolo_detector is None:
+            yolo_detector = YOLO(args.yolo_model)
+            yolo_detector.to(device)
+        yolo_frames = extract_raw_bboxes(img_paths, yolo_detector, vis_dir=None, fps=fps)
+        yolo_report = compare_mint_yolo_observations(
+            canonical["frames"], yolo_frames, iou_threshold=args.yolo_check_iou_threshold
+        )
+        yolo_stage = artifacts.stage_dir("30_yolo_check")
+        artifacts.write_json(yolo_stage / 'report.json', {
+            **yolo_report, "decision_effect": "none", "schema_version": "egohand.yolo_check.v1"
+        })
+
+    # This is the canonical/downstream boundary. Every later stage receives
+    # only frames from egohand.observations.v1, regardless of their producer.
+    pipeline_sequence = canonical
+    if args.depth_gate or args.motion_gate:
         from observation_frontend.depth_gate import apply_depth_gate
         from observation_frontend.motion_gate import apply_motion_gate
         if args.depth_gate:
-            cleaned_data, depth_report = apply_depth_gate(
-                cleaned_data, img_paths, args.depth_dir, min_depth_m=args.depth_min_m,
+            gated_frames, depth_report = apply_depth_gate(
+                pipeline_sequence["frames"], img_paths, args.depth_dir, min_depth_m=args.depth_min_m,
                 max_depth_m=args.depth_max_m, max_ratio=args.depth_max_ratio,
                 min_ratio=args.depth_min_ratio, history_size=args.depth_history,
                 max_bad_frames=args.depth_max_bad_frames)
+            pipeline_sequence = {**pipeline_sequence, "frames": gated_frames}
+            validate_observation_sequence(pipeline_sequence)
+            depth_stage = artifacts.stage_dir("10_depth_gate")
+            save_observation_sequence(pipeline_sequence, depth_stage / "observations.pkl")
+            artifacts.write_json(depth_stage / "report.json", depth_report)
         if args.motion_gate:
-            cleaned_data, motion_report = apply_motion_gate(
-                cleaned_data, img_paths, center_jump_threshold=args.motion_center_threshold,
+            gated_frames, motion_report = apply_motion_gate(
+                pipeline_sequence["frames"], img_paths, center_jump_threshold=args.motion_center_threshold,
                 size_ratio_threshold=args.motion_size_ratio, iou_threshold=args.motion_iou_threshold,
                 joint_jump_threshold=args.motion_joint_threshold, min_bad_votes=args.motion_min_votes,
                 reacquire_frames=args.motion_reacquire_frames)
+            pipeline_sequence = {**pipeline_sequence, "frames": gated_frames}
+            validate_observation_sequence(pipeline_sequence)
+            motion_stage = artifacts.stage_dir("20_motion_gate")
+            save_observation_sequence(pipeline_sequence, motion_stage / "observations.pkl")
+            artifacts.write_json(motion_stage / "report.json", motion_report)
 
-    # Persist the stable frontend boundary artifact.  Runtime legacy fields are
-    # accepted by the adapter, but downstream consumers can inspect this file
-    # without knowing which frontend produced it.
-    canonical = canonical_sequence(cleaned_data, sequence_name=video_name, fps=fps, frontend=args.frontend)
-    frontend_stage = artifacts.stage_dir("00_frontend")
-    artifacts.write_pickle(frontend_stage / "observations.pkl", canonical)
-    artifacts.write_json(frontend_stage / "summary.json", {"schema_version": "egohand.observations.v1",
-        "frame_count": len(canonical["frames"]), "frontend": args.frontend,
-        "loaded_from_cache": bool(not args.force_detect)})
-    if args.depth_gate:
-        depth_stage = artifacts.stage_dir("10_depth_gate")
-        artifacts.write_pickle(depth_stage / "observations.pkl", canonical)
-        artifacts.write_json(depth_stage / "report.json", depth_report or {"schema_version": "egohand.depth_gate.v1", "enabled": True})
-    if args.motion_gate:
-        motion_stage = artifacts.stage_dir("20_motion_gate")
-        artifacts.write_pickle(motion_stage / "observations.pkl", canonical)
-        artifacts.write_json(motion_stage / "report.json", motion_report or {"schema_version": "egohand.motion_gate.v1", "enabled": True})
+    cleaned_data = pipeline_sequence["frames"]
+    frontend_manifest = {"name": args.frontend}
+    if args.frontend == "canonical":
+        frontend_manifest.update({
+            "source_frontend": source_frontend,
+            "input_artifact": str(Path(args.observations).resolve()),
+            "schema_version": OBSERVATION_SCHEMA,
+        })
     manifest = {"schema_version": "egohand.run.v1", "sequence": {"name": video_name,
         "input": str(input_path.resolve()), "frame_count": len(img_paths), "fps": float(fps)},
-        "frontend": {"name": args.frontend}, "backend": {"name": args.backend},
+        "frontend": frontend_manifest, "backend": {"name": args.backend},
         "force_detect": bool(args.force_detect), "pipeline": [{"name": "frontend", "enabled": True,
             "artifact": "stages/00_frontend/observations.pkl"}]}
     artifacts.write_manifest(manifest)
@@ -545,11 +547,13 @@ def main():
         output = results.get(frame["img_path"], {})
         hands = []
         for index, mano in enumerate(output.get("mano", [])):
+            backend_meta = output.get("backend_meta", [])[index]
             hands.append({"track_id": int(output.get("tracked_ids", [])[index]),
-                "fragment_id": 0, "handedness": "right" if int(output.get("tracked_ids", [])[index]) else "left",
-                "backend_handedness": "right" if int(output.get("tracked_ids", [])[index]) else "left",
+                "fragment_id": int(backend_meta.get("physical_track_fragment_id", 0)),
+                "handedness": backend_meta.get("handedness", backend_meta.get("backend_handedness")),
+                "backend_handedness": backend_meta.get("backend_handedness", backend_meta.get("handedness")),
                 "mano": mano, "cam_trans": output.get("cam_trans", [])[index],
-                "keypoints_2d": output.get("extra_data", [])[index], "meta": output.get("backend_meta", [])[index]})
+                "keypoints_2d": output.get("extra_data", [])[index], "meta": backend_meta})
         final_frames.append({"frame_idx": frame["frame_idx"], "img_path": frame["img_path"],
             "timestamp_ns": frame.get("timestamp_ns"), "hands": hands})
     final_payload = {"schema_version": "egohand.results.v1", "sequence": canonical["sequence"],

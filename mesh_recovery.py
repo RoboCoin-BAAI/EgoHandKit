@@ -58,7 +58,7 @@ def _collect_observation_inputs(frames, args, backend_name):
         raise ValueError(f'Cannot read image: {img_paths[0]}')
     instances, segments, by_key, last_by_track = [], [], {}, {}
     for frame in frames:
-        for observation in frame.get('hands', frame.get('selected_for_hamer', [])):
+        for observation in frame['hands']:
             # ViTPose handedness is retained in metadata, but HaWoR needs a
             # stable crop flip for an entire physical track.  The frontend
             # supplies a track-level side that is robust to transient flips.
@@ -77,11 +77,8 @@ def _collect_observation_inputs(frames, args, backend_name):
             inst = HandInstance(
                 frame_idx=index, img_path=frame['img_path'], hand_side=side,
                 bbox=bbox, bbox_square=np.array([*center, size, size], dtype=np.float32),
-                keypoints=np.asarray(observation.get('keypoints_2d', observation.get('vitpose_keypoints_2d')), dtype=np.float32).copy(),
-                observation_meta={
-                    'frontend': observation.get('observation_meta', observation.get('meta', {})).get('source', 'observations'),
-                    **deepcopy(observation),
-                },
+                keypoints=np.asarray(observation['keypoints_2d'], dtype=np.float32).copy(),
+                observation_meta=deepcopy(observation),
             )
             instances.append(inst)
             by_key[key] = inst
@@ -110,9 +107,7 @@ def _collect_inputs(raw_data, args, backend_name):
     if not raw_data:
         return Pass3Inputs(img_paths=[], image_size=(0, 0), instances=[],
                            instances_by_key={}, segments_by_hand={'left': [], 'right': []})
-    if any('hands' in frame or 'selected_for_hamer' in frame for frame in raw_data):
-        if not all('hands' in frame or 'selected_for_hamer' in frame for frame in raw_data):
-            raise ValueError('Cannot mix observation and legacy frontend frames')
+    if all('hands' in frame for frame in raw_data):
         return _collect_observation_inputs(raw_data, args, backend_name)
     img_paths = [Path(frame['img_path']) for frame in raw_data]
     first_img = cv2.imread(str(img_paths[0]))
@@ -206,7 +201,7 @@ def _assemble_results(raw_outputs, cleaned_data):
             'shot': 0,
             'backend_meta': backend_meta,
         }
-        if 'selected_for_hamer' in frame_data:
+        if 'hands' in frame_data:
             results_dict[img_path]['track_id_semantics'] = 'anonymous_physical_slot'
             results_dict[img_path]['physical_tracks'] = deepcopy(frame_data.get('physical_tracks', []))
             for field in ('frame_idx', 'timestamp_ns', 'time_s'):

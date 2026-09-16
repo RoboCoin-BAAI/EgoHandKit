@@ -32,8 +32,8 @@ def _bbox_metrics(previous: dict[str, Any], current: dict[str, Any], diagonal: f
         "size_ratio": float(max(prev_area, curr_area) / max(min(prev_area, curr_area), 1e-6)),
         "iou": float(iou),
     }
-    previous_points = np.asarray(previous.get("keypoints_2d", previous.get("vitpose_keypoints_2d", [])), dtype=np.float32)
-    current_points = np.asarray(current.get("keypoints_2d", current.get("vitpose_keypoints_2d", [])), dtype=np.float32)
+    previous_points = np.asarray(previous["keypoints_2d"], dtype=np.float32)
+    current_points = np.asarray(current["keypoints_2d"], dtype=np.float32)
     if previous_points.ndim == 2 and current_points.shape == previous_points.shape and previous_points.shape[1] >= 2:
         valid = np.isfinite(previous_points[:, :2]).all(axis=1) & np.isfinite(current_points[:, :2]).all(axis=1)
         if valid.any():
@@ -88,17 +88,18 @@ def apply_motion_gate(
             raise ValueError(f"Cannot read image for motion gate: {image_path}")
         diagonals.append(float(np.hypot(image.shape[0], image.shape[1])))
 
-    candidates = {"left": [], "right": []}
+    candidates = {}
     for frame_position, frame in enumerate(frames):
-        for observation in frame.get("hands", frame.get("selected_for_hamer", [])):
+        for observation in frame["hands"]:
             side = observation["handedness"]
-            candidates[side].append((frame_position, observation))
+            track = int(observation["physical_track_id"])
+            candidates.setdefault((track, side), []).append((frame_position, observation))
 
-    accepted: dict[tuple[int, str], dict[str, Any]] = {}
+    accepted: dict[tuple[int, int, str], dict[str, Any]] = {}
     diagnostics = [{"frame_idx": int(frame["frame_idx"]), "hands": {}} for frame in frames]
     summary_counts = {"accepted": 0, "rejected": 0, "isolated_or_return": 0, "reacquired": 0}
 
-    for side, side_candidates in candidates.items():
+    for (track, side), side_candidates in candidates.items():
         side_candidates.sort(key=lambda item: item[0])
         if not side_candidates:
             continue
@@ -150,7 +151,8 @@ def apply_motion_gate(
                         classification = "isolated_or_return"
                         summary_counts["isolated_or_return"] += 1
                     summary_counts["rejected"] += 1
-                    diagnostics[position]["hands"][side] = {
+                    diagnostic_key = side if side not in diagnostics[position]["hands"] else f"{side}:{track}"
+                    diagnostics[position]["hands"][diagnostic_key] = {
                         "valid": False,
                         "classification": classification,
                         "bad_votes": int(bad_votes),
@@ -166,13 +168,14 @@ def apply_motion_gate(
                 classification = "new_fragment"
             updated = dict(observation)
             updated["physical_track_fragment_id"] = int(max_fragment)
-            meta = dict(updated.get("observation_meta", updated.get("meta", {})))
+            meta = dict(updated.get("meta", {}))
             meta.update({"motion_gate": "pass", "motion_gate_metrics": metrics})
-            updated["observation_meta"] = meta
-            accepted[(position, side)] = updated
+            updated["meta"] = meta
+            accepted[(position, track, side)] = updated
             previous = (position, updated)
             summary_counts["accepted"] += 1
-            diagnostics[position]["hands"][side] = {
+            diagnostic_key = side if side not in diagnostics[position]["hands"] else f"{side}:{track}"
+            diagnostics[position]["hands"][diagnostic_key] = {
                 "valid": True,
                 "classification": classification,
                 "metrics": metrics,
@@ -182,11 +185,11 @@ def apply_motion_gate(
     output = []
     for position, frame in enumerate(frames):
         selected = [
-            accepted[(position, observation["handedness"])]
-            for observation in frame.get("hands", frame.get("selected_for_hamer", []))
-            if (position, observation["handedness"]) in accepted
+            accepted[(position, int(observation["physical_track_id"]), observation["handedness"])]
+            for observation in frame["hands"]
+            if (position, int(observation["physical_track_id"]), observation["handedness"]) in accepted
         ]
-        output.append({**frame, "selected_for_hamer": selected, "hands": selected, "motion_gate": diagnostics[position]["hands"]})
+        output.append({**frame, "hands": selected, "motion_gate": diagnostics[position]["hands"]})
     report = {
         "schema_version": "motion_gate.v1",
         "frame_count": len(frames),

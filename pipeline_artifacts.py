@@ -31,6 +31,9 @@ class ArtifactStore:
         path = Path(path); path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL))
 
+    def write_manifest(self, manifest: dict[str, Any]) -> None:
+        self.write_json(self.run_dir / "run_manifest.json", manifest)
+
 
 def serialize_backend_outputs(outputs: list[Any]) -> list[dict[str, Any]]:
     """Convert runtime BackendOutputInstance objects to stable plain records."""
@@ -41,6 +44,3 @@ def serialize_backend_outputs(outputs: list[Any]) -> list[dict[str, Any]]:
             "cam_trans": output.cam_trans, "pred_vertices": output.pred_vertices,
             "pred_keypoints_2d": output.pred_keypoints_2d, "raw_backend_meta": output.raw_backend_meta})
     return records
-
-    def write_manifest(self, manifest: dict[str, Any]) -> None:
-        self.write_json(self.run_dir / "run_manifest.json", manifest)

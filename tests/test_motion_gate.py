@@ -18,18 +18,21 @@ def _observation(box):
     points = [[(x1 + x2) / 2, (y1 + y2) / 2, 1.0]] * 21
     return {
         "bbox_xyxy": list(box),
-        "vitpose_keypoints_2d": points,
+        "observation_id": "right",
+        "keypoints_2d": points,
         "handedness": "right",
         "backend_handedness": "right",
         "physical_track_id": 1,
         "physical_track_fragment_id": 0,
-        "observation_meta": {"source": "mint"},
+        "confidence": 1.0,
+        "source": "mint",
+        "meta": {},
     }
 
 
 def _frames(boxes):
     return [
-        {"frame_idx": index, "img_path": f"{index:06d}.jpg", "selected_for_hamer": [_observation(box)]}
+        {"frame_idx": index, "img_path": f"{index:06d}.jpg", "timestamp_ns": None, "hands": [_observation(box)]}
         for index, box in enumerate(boxes)
     ]
 
@@ -40,8 +43,8 @@ def test_isolated_spatial_outlier_is_removed_and_fragment_breaks(tmp_path):
     outlier = (120, 20, 150, 50)
     gated, report = apply_motion_gate(_frames([normal, normal, outlier, normal, normal]), images)
 
-    assert [len(frame["selected_for_hamer"]) for frame in gated] == [1, 1, 0, 1, 1]
-    assert gated[3]["selected_for_hamer"][0]["physical_track_fragment_id"] == 1
+    assert [len(frame["hands"]) for frame in gated] == [1, 1, 0, 1, 1]
+    assert gated[3]["hands"][0]["physical_track_fragment_id"] == 1
     assert report["counts"]["rejected"] == 1
     assert report["frames"][2]["hands"]["right"]["classification"] == "isolated_or_return"
 
@@ -52,7 +55,7 @@ def test_persistent_jump_reacquires_as_new_segment(tmp_path):
     moved = (120, 20, 150, 50)
     gated, report = apply_motion_gate(_frames([normal, normal, moved, moved, moved, moved]), images)
 
-    assert len(gated[2]["selected_for_hamer"]) == 0
-    assert [len(frame["selected_for_hamer"]) for frame in gated[3:]] == [1, 1, 1]
-    assert gated[3]["selected_for_hamer"][0]["physical_track_fragment_id"] == 1
+    assert len(gated[2]["hands"]) == 0
+    assert [len(frame["hands"]) for frame in gated[3:]] == [1, 1, 1]
+    assert gated[3]["hands"][0]["physical_track_fragment_id"] == 1
     assert report["counts"]["reacquired"] == 1
