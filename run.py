@@ -24,7 +24,6 @@ from pathlib import Path
 import argparse
 import gc
 import os
-import shutil
 import sys
 
 # ---------------------------------------------------------------------------
@@ -132,42 +131,34 @@ def build_arg_parser():
                         help='Output/cache sequence name. Defaults to session_camera for dataset videos')
     parser.add_argument('--backend', type=str, default='hawor', choices=['hamer', 'htm', 'wilor', 'hawor'],
                         help='Backend model to use (hamer, htm, wilor, or hawor)')
-    parser.add_argument('--frontend', choices=['legacy', 'observations', 'mint', 'canonical'], default='legacy',
-                        help='Legacy YOLO/cleanup, ViTPose, MINT, or canonical observations')
+    parser.add_argument('--frontend', choices=['legacy', 'observations', 'canonical'], default='legacy',
+                        help='Legacy YOLO/cleanup, ViTPose, or canonical observations')
     parser.add_argument('--observations', type=str, default=None,
                         help='Canonical egohand.observations.v1 pickle; required with --frontend canonical')
-    parser.add_argument('--mint_predictions', type=str, default=None,
-                        help='External MINT prediction cache (.npz); required with --frontend mint')
-    parser.add_argument('--mint_mano_model_dir', type=str, default=None,
-                        help='MANO model directory for decoding raw MINT hand[218] when *_joints_cam are absent')
-    parser.add_argument('--mint_bbox_scale', type=float, default=1.0,
-                        help='Square padding applied to projected MINT joints before HaMeR')
-    parser.add_argument('--mint_presence_threshold', type=float, default=0.5,
-                        help='Minimum MINT hand presence probability to emit an observation')
     parser.add_argument('--yolo_check', action='store_true', default=False,
-                        help='Run full-image YOLO as a diagnostic comparison; never replaces MINT observations')
+                        help='Run full-image YOLO as a diagnostic comparison; never changes canonical observations')
     parser.add_argument('--yolo_check_iou_threshold', type=float, default=0.1,
                         help='IoU threshold used by --yolo_check')
     parser.add_argument('--temporal_smoother', action='store_true', default=False,
-                        help='Apply the MINT UKF/RTS MANO smoother after HMR inference')
+                        help='Apply the optional camera-space MANO temporal smoother after HMR inference')
     parser.add_argument('--endpoint_wrist_gate', action='store_true', default=False,
                         help='Reject only raw backend segment endpoints with an extreme wrist jump')
     parser.add_argument('--endpoint_wrist_max_deg', type=float, default=100.0,
                         help='Reject only raw backend segment endpoints whose wrist rotation jump to the adjacent frame exceeds this angle in degrees')
     parser.add_argument('--smoother_q', type=float, default=0.6,
-                        help='MINT-style smoother process-noise scale')
+                        help='Temporal smoother process-noise scale')
     parser.add_argument('--smoother_r', type=float, default=0.6,
-                        help='MINT-style smoother observation-noise scale')
+                        help='Temporal smoother observation-noise scale')
     parser.add_argument('--smoother_beta', type=float, default=2.0,
-                        help='MINT-style speed-adaptive noise scale')
+                        help='Temporal smoother speed-adaptive noise scale')
     parser.add_argument('--depth_gate', action='store_true', default=False,
-                        help='Reject MINT observations with invalid or implausible depth before HaMeR')
+                        help='Reject canonical observations with invalid or implausible depth before HMR')
     parser.add_argument('--depth_dir', type=str, default=None,
                         help='Depth directory containing fast_foundation/depth_uint16_png')
     parser.add_argument('--depth_min_m', type=float, default=0.05,
-                        help='Absolute minimum valid depth for the MINT depth gate')
+                        help='Absolute minimum valid depth for the depth gate')
     parser.add_argument('--depth_max_m', type=float, default=4.0,
-                        help='Absolute maximum valid depth for the MINT depth gate')
+                        help='Absolute maximum valid depth for the depth gate')
     parser.add_argument('--depth_max_ratio', type=float, default=2.5,
                         help='Maximum current/reference depth ratio')
     parser.add_argument('--depth_min_ratio', type=float, default=0.4,
@@ -215,7 +206,8 @@ def build_arg_parser():
                         help='Factor for padding the bbox (default: 2.0 for hamer/htm/wilor; user-overridable, e.g. 1.3; hawor uses its own crop pipeline)')
     parser.add_argument('--file_type', nargs='+', default=['*.jpg', '*.png'],
                         help='List of file extensions to consider')
-    parser.add_argument('--yolo_model', type=str, default='./_DATA/hand_det/detector.pt',
+    parser.add_argument('--yolo_model', type=str,
+                        default=str(Path(__file__).resolve().parent / '_DATA/hand_det/detector.pt'),
                         help='Path to YOLO hand detector model')
     parser.add_argument('--img_focal', type=float, default=None,
                         help='Image focal length for HaWoR backend; if omitted follow HaWoR logic: est_focal.txt then default 600')
@@ -244,20 +236,12 @@ def build_arg_parser():
 def validate_cli_args(parser, args):
     if args.frontend == 'observations' and (args.use_vitpose or args.no_clean_bbox):
         parser.error('--frontend observations replaces legacy detection/cleanup; omit --use_vitpose and --no_clean_bbox')
-    if args.frontend in {'mint', 'canonical'} and (args.use_vitpose or args.no_clean_bbox):
-        parser.error(f'--frontend {args.frontend} consumes external observations; omit --use_vitpose and --no_clean_bbox')
-    if args.frontend == 'mint' and not args.mint_predictions:
-        parser.error('--frontend mint requires --mint_predictions /path/to/mint_predictions.npz')
-    if args.frontend != 'mint' and args.mint_predictions:
-        parser.error('--mint_predictions is only valid with --frontend mint')
+    if args.frontend == 'canonical' and (args.use_vitpose or args.no_clean_bbox):
+        parser.error('--frontend canonical consumes external observations; omit --use_vitpose and --no_clean_bbox')
     if args.frontend == 'canonical' and not args.observations:
         parser.error('--frontend canonical requires --observations /path/to/observations.pkl')
     if args.frontend != 'canonical' and args.observations:
         parser.error('--observations is only valid with --frontend canonical')
-    if args.mint_bbox_scale <= 0:
-        parser.error('--mint_bbox_scale must be positive')
-    if not 0 <= args.mint_presence_threshold <= 1:
-        parser.error('--mint_presence_threshold must lie in [0,1]')
     if not 0 <= args.yolo_check_iou_threshold <= 1:
         parser.error('--yolo_check_iou_threshold must lie in [0,1]')
     if args.endpoint_wrist_max_deg <= 0:
@@ -388,43 +372,6 @@ def main():
             all_person=args.observation_all_person,
             enable_consolidation=not args.observation_no_consolidation,
         )
-    elif args.frontend == 'mint':
-        from observation_frontend.mint_adapter import (
-            build_mint_observations,
-            load_mint_observation_cache,
-            load_mint_predictions,
-            save_mint_observation_cache,
-        )
-        mint_cache = Path(args.mint_predictions)
-        if not mint_cache.is_file():
-            raise FileNotFoundError(f"MINT prediction cache does not exist: {mint_cache}")
-        saved_mint_cache = out_dir / 'mint_predictions.npz'
-        if mint_cache.resolve() != saved_mint_cache.resolve() and (args.force_detect or not saved_mint_cache.exists()):
-            shutil.copy2(mint_cache, saved_mint_cache)
-            print(f"MINT prediction cache copied to {saved_mint_cache}")
-        observation_cache = out_dir / 'mint_observations.pkl'
-        mint_config = {
-            'bbox_scale': float(args.mint_bbox_scale),
-            'presence_threshold': float(args.mint_presence_threshold),
-            'mano_model_dir': str(Path(args.mint_mano_model_dir).resolve()) if args.mint_mano_model_dir else None,
-            'projection': 'camera_frame_opencv_to_original_pixels_v1',
-        }
-        if observation_cache.exists() and not args.force_detect:
-            cleaned_data = load_mint_observation_cache(
-                observation_cache, image_paths=img_paths, mint_path=mint_cache, config=mint_config)
-            print(f"Loading MINT observation cache: {observation_cache}")
-        else:
-            mint_predictions = load_mint_predictions(mint_cache)
-            cleaned_data = build_mint_observations(
-                mint_predictions, img_paths,
-                bbox_scale=args.mint_bbox_scale,
-                presence_threshold=args.mint_presence_threshold,
-                mano_model_dir=args.mint_mano_model_dir,
-            )
-            save_mint_observation_cache(
-                observation_cache, cleaned_data,
-                image_paths=img_paths, mint_path=mint_cache, config=mint_config)
-            print(f"MINT observations cached to {observation_cache}")
     elif pass1_cache.exists() and not args.force_detect:
         print(f"\nLoading cached Pass 1 results from {pass1_cache}")
         with open(pass1_cache, 'rb') as f:
@@ -470,13 +417,13 @@ def main():
     artifacts.write_json(frontend_stage / "summary.json", frontend_summary)
 
     if args.yolo_check:
-        from observation_frontend.mint_adapter import compare_mint_yolo_observations
+        from observation_frontend.yolo_check import compare_observations_yolo
         print(f"\nRunning YOLO diagnostic check with {args.yolo_model}")
         if yolo_detector is None:
             yolo_detector = YOLO(args.yolo_model)
             yolo_detector.to(device)
         yolo_frames = extract_raw_bboxes(img_paths, yolo_detector, vis_dir=None, fps=fps)
-        yolo_report = compare_mint_yolo_observations(
+        yolo_report = compare_observations_yolo(
             canonical["frames"], yolo_frames, iou_threshold=args.yolo_check_iou_threshold
         )
         yolo_stage = artifacts.stage_dir("30_yolo_check")

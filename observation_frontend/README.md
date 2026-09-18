@@ -1,55 +1,28 @@
 # Observation Frontend
 
-## MINT offline frontend
+## External observation frontend
 
-`--frontend mint --mint_predictions /path/to/mint_predictions.npz` loads the
-versioned external cache described in [MINT_FRONTEND_DESIGN.md](MINT_FRONTEND_DESIGN.md),
-projects camera-frame MINT joints to original-image pixels, and feeds the
-result into the existing HaMeR crop/recovery path. It does not import MINT or
-replace HaMeR's MANO prediction. Use `--mint_mano_model_dir` when the cache
-contains raw `[T,218]` hand parameters without decoded `*_joints_cam` arrays.
+External models such as MINT or ACE must be converted to the shared
+`egohand.observations.v1` artifact before entering the runtime. The converter
+owns each model's private cache format and projection conventions; EgoHandKit
+only consumes the validated canonical observations.
 
 Example:
 
 ```bash
-python run.py --input /path/to/frames --frontend mint \
-  --mint_predictions /path/to/mint_predictions.npz --backend hamer \
-  --mint_style_smoother
-
-# Add the optional depth veto (uint16 millimetre PNGs):
-python run.py --input /path/to/frames --frontend mint \
-  --mint_predictions /path/to/mint_predictions.npz --backend hamer \
-  --mint_depth_gate --mint_depth_dir /path/to/depth
-
-# Add the pre-HaMeR spatial jump gate as well:
-python run.py --input /path/to/frames --frontend mint \
-  --mint_predictions /path/to/mint_predictions.npz --backend hamer \
-  --mint_depth_gate --mint_depth_dir /path/to/depth \
-  --mint_motion_gate
+python run.py --input /path/to/frames --frontend canonical \
+  --observations /path/to/observations.pkl --backend hamer
 ```
 
-`--mint_style_smoother` is an opt-in UKF + unscented RTS pass applied to
-HaMeR's per-track camera translation, MANO rotations, and shape after HMR
-inference. It is a local port of MINT's representation-safe smoothing logic;
-the MINT repository is not imported at runtime.
+The downstream depth gate, motion gate, endpoint gate and temporal smoother are
+frontend-independent and work identically for canonical observations from any
+producer.
 
 ## Optional Depth Veto
 
-For sequences with the exported stereo depth, add `--mint_depth_gate
---mint_depth_dir /path/to/depth`. The adapter reads the uint16 PNG sequence
-under `fast_foundation/depth_uint16_png` (millimetres), takes the median depth
-inside each MINT bbox, and rejects invalid, out-of-range, or abrupt relative
-depth jumps before HaMeR. Defaults are 0.05--4.0 m and a 0.4--2.5 ratio against
-the median of the last ten valid frames. A rejected frame starts a new physical
-track fragment, so the optional MANO smoother cannot bridge across the bad
-interval. Depth is a veto only; it does not choose between MINT and YOLO.
-
-`--mint_yolo_check` remains a diagnostic full-image comparison and does not
-replace MINT bboxes. The resulting `mint_depth_gate.json` and
-`mint_motion_gate.json` and `mint_yolo_check.json` are written beside the
-normal observation cache. The motion gate uses bbox center/size/IoU and
-projected-joint jumps; it rejects a vote majority before HaMeR and starts a
-new track fragment so the MANO smoother cannot bridge the rejected interval.
+For sequences with exported stereo depth, use the generic `--depth_gate
+--depth_dir` options. `--yolo_check` is diagnostic only: it compares canonical
+boxes against legacy YOLO boxes and never changes HMR input.
 
 ## Scope
 
