@@ -165,3 +165,18 @@ def test_cli_switch_and_threshold_validation():
         '--input', 'unused', '--mint_3d_consistency_gate', '--depth_dir', 'depth',
         '--hmr_duplicate_image_gate']))
     assert args.hmr_duplicate_image_gate
+
+
+def test_cli_and_pipeline_share_duplicate_config_defaults_and_overrides():
+    from mesh_recovery import _consistency_options
+    from run import build_arg_parser, validate_cli_args
+    parser = build_arg_parser()
+    defaults = parser.parse_args(['--input', 'unused'])
+    assert DuplicateImageConfig.from_args(defaults) == DuplicateImageConfig()
+    assert DuplicateImageConfig.from_args(SimpleNamespace()) == DuplicateImageConfig()
+    args = validate_cli_args(parser, parser.parse_args([
+        '--input', 'unused', '--hmr_duplicate_iou_min', '0.55',
+        '--hmr_duplicate_depth_max_m', '0.04',
+        '--hmr_duplicate_reference_separation', '0.7',
+        '--hmr_duplicate_assignment_margin', '0.2']))
+    assert _consistency_options(args)['duplicate_image_config'] == DuplicateImageConfig(0.55, 0.04, 0.7, 0.2)

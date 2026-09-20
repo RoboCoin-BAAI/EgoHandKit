@@ -15,6 +15,16 @@ class DuplicateImageConfig:
     reference_separation: float = 0.5
     assignment_margin: float = 0.15
 
+    @classmethod
+    def from_args(cls, args):
+        """Use the same defaults and validation for CLI and partial namespaces."""
+        return cls(
+            iou_min=getattr(args, 'hmr_duplicate_iou_min', cls.iou_min),
+            depth_max_m=getattr(args, 'hmr_duplicate_depth_max_m', cls.depth_max_m),
+            reference_separation=getattr(args, 'hmr_duplicate_reference_separation', cls.reference_separation),
+            assignment_margin=getattr(args, 'hmr_duplicate_assignment_margin', cls.assignment_margin),
+        )
+
     def __post_init__(self):
         values = list(asdict(self).values())
         if (not np.isfinite(values).all() or min(values) <= 0 or self.iou_min > 1):

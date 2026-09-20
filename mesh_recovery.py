@@ -515,11 +515,7 @@ def _consistency_options(args):
         reference_separation_m=getattr(args, 'hmr_reference_separation_m', 0.15),
         assignment_margin_m=getattr(args, 'hmr_assignment_margin_m', 0.08),
         duplicate_image_gate=getattr(args, 'hmr_duplicate_image_gate', False),
-        duplicate_image_config=DuplicateImageConfig(
-            iou_min=getattr(args, 'hmr_duplicate_iou_min', 0.4),
-            depth_max_m=getattr(args, 'hmr_duplicate_depth_max_m', 0.06),
-            reference_separation=getattr(args, 'hmr_duplicate_reference_separation', 0.5),
-            assignment_margin=getattr(args, 'hmr_duplicate_assignment_margin', 0.15)),
+        duplicate_image_config=DuplicateImageConfig.from_args(args),
     )
 
 

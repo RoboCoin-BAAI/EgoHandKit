@@ -62,6 +62,7 @@ from tqdm import tqdm
 from ultralytics import YOLO
 
 from hmr_backends.utils.renderer import Renderer
+from hmr_backends.utils.hand_identity import DuplicateImageConfig
 from hmr_backends.models import load_backend
 from mesh_recovery import run_mesh_recovery
 
@@ -211,11 +212,11 @@ def build_arg_parser():
                         help='Reject the wrong-side duplicate only with two separated, reliable frontend references')
     parser.add_argument('--hmr_duplicate_image_gate', action='store_true',
                         help='Detect wrong-side duplicates using output bbox IoU, HMR sensor depth and frontend image positions')
-    parser.add_argument('--hmr_duplicate_iou_min', type=float, default=0.4)
-    parser.add_argument('--hmr_duplicate_depth_max_m', type=float, default=0.06)
-    parser.add_argument('--hmr_duplicate_reference_separation', type=float, default=0.5,
+    parser.add_argument('--hmr_duplicate_iou_min', type=float, default=DuplicateImageConfig.iou_min)
+    parser.add_argument('--hmr_duplicate_depth_max_m', type=float, default=DuplicateImageConfig.depth_max_m)
+    parser.add_argument('--hmr_duplicate_reference_separation', type=float, default=DuplicateImageConfig.reference_separation,
                         help='Minimum frontend wrist separation in mean hand-box diagonals')
-    parser.add_argument('--hmr_duplicate_assignment_margin', type=float, default=0.15,
+    parser.add_argument('--hmr_duplicate_assignment_margin', type=float, default=DuplicateImageConfig.assignment_margin,
                         help='Minimum nearest-reference distance margin in mean hand-box diagonals')
     parser.add_argument('--hmr_duplicate_distance_m', type=float, default=0.06)
     parser.add_argument('--hmr_reference_separation_m', type=float, default=0.15)
@@ -315,10 +316,8 @@ def validate_cli_args(parser, args):
         parser.error('--hmr_stable_wrist_anchor requires --hmr_partial_hand_recovery')
     if (args.hmr_primary_policy or args.hmr_duplicate_hand_gate or args.hmr_duplicate_image_gate) and not args.mint_3d_consistency_gate:
         parser.error('HMR selection policies require --mint_3d_consistency_gate')
-    from hmr_backends.utils.hand_identity import DuplicateImageConfig
     try:
-        DuplicateImageConfig(args.hmr_duplicate_iou_min, args.hmr_duplicate_depth_max_m,
-                             args.hmr_duplicate_reference_separation, args.hmr_duplicate_assignment_margin)
+        DuplicateImageConfig.from_args(args)
     except ValueError as exc:
         parser.error(str(exc))
     if args.temporal_smoother and args.final_joints_smoother:

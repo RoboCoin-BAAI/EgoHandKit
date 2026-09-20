@@ -81,3 +81,13 @@ abstain. It does not relabel already mirrored MANO outputs, invent missing
 geometry, or attempt to fix arbitrary single-hand pose errors. Larger/different
 datasets are needed to establish general false-positive and recall rates.
 The deferred sensor-background/1m problem is intentionally unchanged.
+
+## Configuration Consolidation
+
+The subsequent behavior-preserving cleanup centralizes duplicate-image defaults
+and CLI/runtime configuration construction in `DuplicateImageConfig`. Validation:
+201 tests and 6 subtests passed. Replaying all 994 captured HMR outputs produced
+an identical complete gate-report SHA256 before and after the cleanup:
+`a9f3c973d487cf7ab8d17740068593e616a750c3a2d19f2961c9114f3c7dc0d2`.
+Thresholds, selection decisions and the existing rendered outputs are unchanged;
+this cleanup did not rerun inference or rendering.
