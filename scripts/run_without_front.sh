@@ -26,7 +26,7 @@ die() {
 usage() {
     cat <<EOF
 Usage:
-  $0 <mint|ace> <video> <prediction> <depth_dir> <output_root>
+  $0 <mint|ace> <video> <prediction> <depth_dir> <output_root> [run.py arguments...]
 
 MINT:
   $0 mint <video.mp4> <prediction.npz> <depth_dir> <output_root>
@@ -48,7 +48,7 @@ EOF
 # Args
 # ============================================================
 
-[[ $# -eq 5 ]] || {
+[[ $# -ge 5 ]] || {
     usage
     exit 1
 }
@@ -58,6 +58,7 @@ VIDEO_INPUT="$2"
 RAW_INPUT="$3"
 DEPTH_INPUT="$4"
 OUTPUT_INPUT="$5"
+EXTRA_ARGS=("${@:6}")
 
 [[ "$FRONTEND" == "mint" || "$FRONTEND" == "ace" ]] \
     || die "frontend must be 'mint' or 'ace'"
@@ -179,7 +180,9 @@ python run.py \
     --mint_depth_sensor_anchor \
     --motion_gate \
     --mint_3d_consistency_gate \
+    --hmr_primary_policy \
     --hmr_partial_hand_recovery \
+    --hmr_stable_wrist_anchor \
     --endpoint_wrist_gate \
     --endpoint_wrist_max_deg 100 \
     --final_joints_smoother \
@@ -187,7 +190,8 @@ python run.py \
     --render_hand_tracking_parquet \
     --force_detect \
     --gpu 0 \
-    --output_root "$EGO_OUTPUT_ROOT"
+    --output_root "$EGO_OUTPUT_ROOT" \
+    "${EXTRA_ARGS[@]}"
 
 
 echo "============================================================"

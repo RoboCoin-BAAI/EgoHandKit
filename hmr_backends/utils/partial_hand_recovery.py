@@ -21,7 +21,7 @@ def visible_hand(observation, image_shape, min_joints=4):
 
 
 def attach_partial_hand_anchors(outputs, depth_dir, frame_count, *, depth_spread_max_m=0.08,
-                                max_depth_m=None):
+                                max_depth_m=None, stable_wrist_anchor=False):
     """Keep HMR relative geometry; recover only its absolute wrist position.
 
     Three consistent visible MCP samples can estimate wrist Z by subtracting
@@ -58,7 +58,8 @@ def attach_partial_hand_anchors(outputs, depth_dir, frame_count, *, depth_spread
                        and np.isfinite(k).all() and k[0, 0] > 0 and k[1, 1] > 0)
         wrist = None
         depth = anchor.get('hmr_wrist_depth_m')
-        if depth is None and anchor.get('mint_wrist_depth_m') is not None:
+        if (not stable_wrist_anchor and depth is None
+                and anchor.get('mint_wrist_depth_m') is not None):
             mint = convert_mint_to_camera_joints(
                 meta, wrist_depth_m=anchor['mint_wrist_depth_m'],
                 camera_intrinsics=anchor.get('camera_intrinsics'))
@@ -92,17 +93,31 @@ def attach_partial_hand_anchors(outputs, depth_dir, frame_count, *, depth_spread
             wrist = np.array([(points[0, 0] - k[0, 2]) * depth / k[0, 0],
                               (points[0, 1] - k[1, 2]) * depth / k[1, 1], depth])
         if wrist is None:
+            mint_depth = anchor.get('mint_wrist_depth_m')
+            if stable_wrist_anchor:
+                from hmr_backends.utils.hmr_selection import reference_quality
+                if not reference_quality(meta, depth_spread_max_m)['trusted']:
+                    mint_depth = None
             mint = convert_mint_to_camera_joints(
-                meta, wrist_depth_m=anchor.get('mint_wrist_depth_m'),
+                meta, wrist_depth_m=mint_depth,
                 camera_intrinsics=anchor.get('camera_intrinsics'))
             if mint is not None:
                 wrist = mint[0]
-                calibrated = anchor.get('mint_wrist_depth_m') is not None
+                calibrated = mint_depth is not None
                 diagnostic.update(source='mint_sensor_wrist' if calibrated else 'mint_frontend_wrist',
                                   sensor_calibrated=calibrated)
         if wrist is None or not np.isfinite(wrist).all() or np.any(wrist[2] + relative[:, 2] <= 0):
             diagnostic['reason'] = 'missing_valid_wrist_anchor'
             continue
+        if stable_wrist_anchor:
+            if not can_project:
+                diagnostic['reason'] = 'missing_hmr_wrist_ray'
+                continue
+            # Auxiliary references supply Z, never a different image-space wrist.
+            depth = float(wrist[2])
+            wrist = np.array([(points[0, 0] - k[0, 2]) * depth / k[0, 0],
+                              (points[0, 1] - k[1, 2]) * depth / k[1, 1], depth])
+            diagnostic['wrist_ray_source'] = 'hmr'
         diagnostic['wrist_camera'] = wrist.tolist()
         if diagnostic['sensor_calibrated'] and max_depth_m is not None and wrist[2] > max_depth_m:
             diagnostic.update(status='depth_rejected', reason='absolute_depth_limit')

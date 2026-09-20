@@ -19,6 +19,56 @@ Depth and motion gates preserve canonical frames and split fragments when they
 reject an observation. YOLO checking is diagnostic-only and has
 `decision_effect: none`.
 
+## Optional HMR-First Refinement
+
+The production wrapper enables `--hmr_primary_policy` within the existing
+consistency stage, without changing canonical input or backend loading. The old
+8cm/40-degree/scale policy remains available when this flag is off. In HMR-first
+mode, wrist errors above 15cm or wrist-to-palm vector errors above 80 degrees
+can veto HMR only against a reliable MINT reference. Scale is diagnostic only.
+Reference reliability requires confidence >= 0.5, positive finite geometry,
+a sensor wrist sample, and at least three MCP-derived wrist-depth samples.
+Their spread and difference from wrist depth must each be <= 8cm. Missing or
+unreliable reference evidence does not veto valid HMR. This is a conservative
+depth support heuristic, not proof that MINT is ground truth.
+
+Severe errors must persist for three consecutive frames in one side/track/
+fragment (configurable, set `--hmr_error_confirm_frames 1` for instantaneous
+decisions). The offline pass rejects the entire confirmed run before smoothing;
+it neither waits inside the smoother nor interpolates rejected HMR. Canonical
+MINT remains the fallback. Missing HMR still keeps available canonical data.
+The existing 1m sensor limit, motion and endpoint gates retain their behavior.
+
+With `--hmr_stable_wrist_anchor`, partial recovery prefers the HMR sensor wrist,
+then consistent visible HMR MCP depth, then supported MINT sensor depth, then
+original uncalibrated MINT depth. All auxiliary anchors supply only Z: XY is
+back-projected along the HMR wrist ray, even outside the image. This avoids
+transplanting a differently projected MINT wrist into a calibrated HMR track.
+The older full-position anchoring remains available when the flag is off.
+
+Pair diagnostics report wrist separation differences, nearest-reference
+assignments, and possible swapped assignments. `--hmr_duplicate_hand_gate`
+additionally rejects the wrong-side HMR when both HMR wrists AND palm centres
+are within 6cm, reliable MINT wrists are separated by more than 15cm, and both
+HMR wrists clearly match the same MINT hand (assignment margin > 8cm and each
+match < 15cm). The correctly labelled HMR is retained and MINT fills the other
+side. True frontend hand overlap does not meet these conditions. Swapped-label
+and separation differences alone remain diagnostic; no mirrored MANO result is
+silently relabelled. Automatic duplicate rejection is opt-in, not enabled by the
+production wrapper until real duplicate examples are validated.
+
+All selection occurs before the existing final UKF/RTS joint smoother. Source
+changes alone do not split a track; missing frames, identity/fragment changes,
+and large jumps still do. HMR-only and final smoothing cannot be enabled
+together. Rendering continues to fit colored MANO meshes to final Parquet
+joints, not to raw rejected HMR. Parquet adds `left_source` and `right_source`
+so mixed-source frames remain auditable; its existing columns are unchanged.
+This refinement does not claim to eliminate raw HMR pose jitter or independent
+MANO fitting error. Diagnostics remain in `mint_3d_consistency.json` and backend
+metadata, including original strict-policy reasons and reference quality.
+
+## Existing Stage Semantics
+
 For production MINT runs, `--mint_depth_sensor_anchor` samples registered
 dataset depth at the projected MINT wrist. A valid sample becomes the wrist's
 absolute depth anchor; disagreement with MINT's original absolute Z is kept as

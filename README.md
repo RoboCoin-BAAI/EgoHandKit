@@ -164,6 +164,13 @@ python run.py --input test_data/images/disk --backend hawor --force_detect
 | `--mint_depth_sensor_anchor` | disabled | Use dataset wrist depth; reject above `--depth_max_m` (production: 1m); unavailable depth keeps frontend 3D without sensor calibration |
 | `--mint_depth_wrist_threshold_m` | `0.08` | Maximum absolute MINT/sensor wrist-depth difference |
 | `--mint_3d_consistency_gate` | disabled | Reject HMR samples inconsistent with available MINT camera-space joints before smoothing |
+| `--hmr_primary_policy` | disabled | Within the consistency stage, only sustained severe errors against sensor-supported MINT veto HMR; enabled in the production script |
+| `--hmr_severe_wrist_distance_m` / `--hmr_severe_vector_angle_deg` | `0.15` / `80` | Severe wrist position / palm-vector discrepancy; scale remains diagnostic in HMR-first mode |
+| `--hmr_error_confirm_frames` | `3` | Consecutive severe frames required within one track fragment; `1` disables confirmation |
+| `--hmr_reference_depth_tolerance_m` | `0.08` | Maximum spread of at least three MINT MCP-derived wrist depths and their disagreement with measured wrist depth |
+| `--hmr_stable_wrist_anchor` | disabled | Partial recovery preserves the HMR wrist image ray, prioritizes visible MCP sensor depth and borrows only MINT Z; production enabled |
+| `--hmr_duplicate_hand_gate` | disabled | Remove wrong-side duplicate with reliable separated MINT references; otherwise pair checks are diagnostic |
+| `--hmr_duplicate_distance_m` / `--hmr_reference_separation_m` / `--hmr_assignment_margin_m` | `0.06` / `0.15` / `0.08` | HMR overlap, minimum frontend separation, and nearest-reference assignment margin, in metres |
 | `--mint_wrist_distance_max_m` | `0.08` | Maximum MINT/HMR wrist distance |
 | `--mint_wrist_vector_angle_max_deg` | `40` | Maximum wrist-to-palm vector angle |
 | `--mint_hand_scale_min` / `--mint_hand_scale_max` | `0.7` / `1.3` | Allowed HMR/MINT hand-scale ratio |

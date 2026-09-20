@@ -33,6 +33,8 @@ HAND_TRACKING_SCHEMA = pa.schema([
     pa.field("left_confidence", pa.float32()),
     pa.field("right_confidence", pa.float32()),
     pa.field("source", pa.string(), nullable=False),
+    pa.field("left_source", pa.string(), nullable=False),
+    pa.field("right_source", pa.string(), nullable=False),
 ], metadata={b"coordinate_system": b"opencv_x_right_y_down_z_forward",
              b"joint_order": b"openpose21"})
 
@@ -180,6 +182,7 @@ def export_hand_tracking_parquet(
                 value[0].tolist() if value is not None else MISSING_JOINTS.tolist()
             )
             row[f"{side}_confidence"] = value[1] if value is not None else None
+            row[f"{side}_source"] = value[2] if value is not None else 'none'
         rows.append(row)
         keys = {}
         for side in ('left', 'right'):

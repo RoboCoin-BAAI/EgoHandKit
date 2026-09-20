@@ -201,6 +201,19 @@ def build_arg_parser():
                         help='Optional penalty for high-cost continued track assignments')
     parser.add_argument('--mint_3d_consistency_gate', action='store_true', default=False,
                         help='Reject HMR outputs inconsistent with an available MINT camera-space 3D prior')
+    parser.add_argument('--hmr_primary_policy', action='store_true',
+                        help='Only sustained severe errors against sensor-supported priors veto HMR; scale is diagnostic')
+    parser.add_argument('--hmr_severe_wrist_distance_m', type=float, default=0.15)
+    parser.add_argument('--hmr_severe_vector_angle_deg', type=float, default=80.0)
+    parser.add_argument('--hmr_error_confirm_frames', type=int, default=3)
+    parser.add_argument('--hmr_reference_depth_tolerance_m', type=float, default=0.08)
+    parser.add_argument('--hmr_duplicate_hand_gate', action='store_true',
+                        help='Reject the wrong-side duplicate only with two separated, reliable frontend references')
+    parser.add_argument('--hmr_duplicate_distance_m', type=float, default=0.06)
+    parser.add_argument('--hmr_reference_separation_m', type=float, default=0.15)
+    parser.add_argument('--hmr_assignment_margin_m', type=float, default=0.08)
+    parser.add_argument('--hmr_stable_wrist_anchor', action='store_true',
+                        help='Partial hands preserve the HMR wrist ray; borrow only reference depth')
     parser.add_argument('--hmr_partial_hand_recovery', action='store_true', default=False,
                         help='Attempt HMR for visible partial hands; use sensor/MINT wrist anchors while retaining HMR shape')
     parser.add_argument('--hmr_partial_min_visible_joints', type=int, default=4)
@@ -290,6 +303,18 @@ def validate_cli_args(parser, args):
         args.hand_tracking_parquet = True
         if args.frontend != 'canonical' or not args.mint_depth_sensor_anchor:
             parser.error('--hmr_partial_hand_recovery requires canonical frontend and --mint_depth_sensor_anchor')
+    if args.hmr_stable_wrist_anchor and not args.hmr_partial_hand_recovery:
+        parser.error('--hmr_stable_wrist_anchor requires --hmr_partial_hand_recovery')
+    if (args.hmr_primary_policy or args.hmr_duplicate_hand_gate) and not args.mint_3d_consistency_gate:
+        parser.error('HMR selection policies require --mint_3d_consistency_gate')
+    if args.temporal_smoother and args.final_joints_smoother:
+        parser.error('Choose HMR-only or final selected-hand smoothing, not both')
+    limits = [args.hmr_severe_wrist_distance_m, args.hmr_severe_vector_angle_deg,
+              args.hmr_reference_depth_tolerance_m, args.hmr_duplicate_distance_m,
+              args.hmr_reference_separation_m, args.hmr_assignment_margin_m]
+    if (not np.isfinite(limits).all() or min(limits) <= 0
+            or args.hmr_severe_vector_angle_deg > 180 or args.hmr_error_confirm_frames < 1):
+        parser.error('HMR selection thresholds must be finite and positive; angle <= 180, confirmation >= 1')
     if not 1 <= args.hmr_partial_min_visible_joints <= 21:
         parser.error('--hmr_partial_min_visible_joints must lie in [1,21]')
     if not 0 < args.hmr_partial_depth_spread_max_m < float('inf'):

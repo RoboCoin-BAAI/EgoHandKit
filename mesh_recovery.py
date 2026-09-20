@@ -472,6 +472,7 @@ def _recover_partial_outputs(raw_outputs, cleaned_data, args, out_dir,
         raw_outputs, args.depth_dir, len(cleaned_data),
         depth_spread_max_m=args.hmr_partial_depth_spread_max_m,
         max_depth_m=args.depth_max_m if getattr(args, 'depth_gate', False) else None,
+        stable_wrist_anchor=getattr(args, 'hmr_stable_wrist_anchor', False),
     )
     excluded = {(o.frame_idx, o.raw_backend_meta.get('physical_track_id'),
                  o.raw_backend_meta.get('handedness', o.hand_side)) for o in raw_outputs
@@ -496,6 +497,28 @@ def _recover_partial_outputs(raw_outputs, cleaned_data, args, out_dir,
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
+
+def _consistency_options(args):
+    return dict(
+        wrist_distance_max_m=args.mint_wrist_distance_max_m,
+        wrist_vector_angle_max_deg=args.mint_wrist_vector_angle_max_deg,
+        hand_scale_min=args.mint_hand_scale_min,
+        hand_scale_max=args.mint_hand_scale_max,
+        hmr_primary=getattr(args, 'hmr_primary_policy', False),
+        severe_wrist_distance_m=getattr(args, 'hmr_severe_wrist_distance_m', 0.15),
+        severe_vector_angle_deg=getattr(args, 'hmr_severe_vector_angle_deg', 80.0),
+        error_confirm_frames=getattr(args, 'hmr_error_confirm_frames', 3),
+        reference_depth_tolerance_m=getattr(args, 'hmr_reference_depth_tolerance_m', 0.08),
+        duplicate_hand_gate=getattr(args, 'hmr_duplicate_hand_gate', False),
+        duplicate_distance_m=getattr(args, 'hmr_duplicate_distance_m', 0.06),
+        reference_separation_m=getattr(args, 'hmr_reference_separation_m', 0.15),
+        assignment_margin_m=getattr(args, 'hmr_assignment_margin_m', 0.08),
+    )
+
+
+def _needs_reference_quality(args):
+    return any(getattr(args, key, False) for key in
+               ('hmr_primary_policy', 'hmr_duplicate_hand_gate', 'hmr_stable_wrist_anchor'))
 
 def run_mesh_recovery(cleaned_data, backend_bundle, renderer, args, out_dir, fps=15, device=None):
     """Run the hand mesh recovery pipeline on cleaned bbox data.
@@ -533,11 +556,7 @@ def run_mesh_recovery(cleaned_data, backend_bundle, renderer, args, out_dir, fps
         print("No hand instances; preserving empty results and the full video timeline.")
         if getattr(args, 'mint_3d_consistency_gate', False):
             _, consistency_report = apply_mint_3d_consistency_gate(
-                [],
-                wrist_distance_max_m=args.mint_wrist_distance_max_m,
-                wrist_vector_angle_max_deg=args.mint_wrist_vector_angle_max_deg,
-                hand_scale_min=args.mint_hand_scale_min,
-                hand_scale_max=args.mint_hand_scale_max,
+                [], **_consistency_options(args),
             )
             artifacts = ArtifactStore(out_dir)
             artifacts.write_json(
@@ -568,6 +587,7 @@ def run_mesh_recovery(cleaned_data, backend_bundle, renderer, args, out_dir, fps
         attach_depth_anchors(
             raw_outputs, args.depth_dir, len(cleaned_data),
             expected_reference_camera=infer_camera_side(getattr(args, 'input', None)),
+            collect_reference_quality=_needs_reference_quality(args),
         )
     artifacts = ArtifactStore(out_dir)
     artifacts.write_pickle(artifacts.stage_dir("40_backend_raw") / "outputs.pkl", serialize_backend_outputs(raw_outputs))
@@ -577,11 +597,7 @@ def run_mesh_recovery(cleaned_data, backend_bundle, renderer, args, out_dir, fps
     if getattr(args, 'mint_3d_consistency_gate', False):
         checked_outputs = raw_outputs
         raw_outputs, consistency_report = apply_mint_3d_consistency_gate(
-            checked_outputs,
-            wrist_distance_max_m=args.mint_wrist_distance_max_m,
-            wrist_vector_angle_max_deg=args.mint_wrist_vector_angle_max_deg,
-            hand_scale_min=args.mint_hand_scale_min,
-            hand_scale_max=args.mint_hand_scale_max,
+            checked_outputs, **_consistency_options(args),
         )
         consistency_stage = artifacts.stage_dir("45_mint_3d_consistency")
         artifacts.write_pickle(
@@ -613,6 +629,7 @@ def run_mesh_recovery(cleaned_data, backend_bundle, renderer, args, out_dir, fps
             attach_depth_anchors(
                 raw_outputs, args.depth_dir, len(cleaned_data),
                 expected_reference_camera=infer_camera_side(getattr(args, 'input', None)),
+                collect_reference_quality=_needs_reference_quality(args),
             )
             raw_outputs, cleaned_data = _recover_partial_outputs(
                 raw_outputs, cleaned_data, args, out_dir, stage='62_partial_hand_recovery')

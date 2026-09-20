@@ -144,7 +144,8 @@ def _valid_wrist_pixel(keypoints_2d: Any) -> np.ndarray | None:
 
 def attach_depth_anchors(outputs: Iterable[Any], depth_dir: str | Path,
                          frame_count: int, *, unit_scale: float = 0.001,
-                         expected_reference_camera: str | None = None) -> None:
+                         expected_reference_camera: str | None = None,
+                         collect_reference_quality: bool = False) -> None:
     """Attach sensor-wrist anchors for both MINT and HMR projected wrists."""
     rows = list(outputs)
     if not rows:
@@ -200,6 +201,19 @@ def attach_depth_anchors(outputs: Iterable[Any], depth_dir: str | Path,
             "hmr_wrist_pixel": hmr_pixel.tolist() if hmr_pixel is not None else None,
             "source": "registered_depth_sensor",
         }
+        if collect_reference_quality:
+            estimates = []
+            mint = convert_mint_to_camera_joints(metadata)
+            points = np.asarray(metadata.get('keypoints_2d'), dtype=np.float64)
+            if mint is not None and points.shape == (21, 3):
+                for index in (5, 9, 13, 17):
+                    if not np.isfinite(points[index]).all() or points[index, 2] <= 0:
+                        continue
+                    sample = depth_for_image_point(
+                        depth_path, points[index, :2], image_shape, unit_scale=unit_scale)
+                    if sample is not None:
+                        estimates.append(float(sample - (mint[index, 2] - mint[0, 2])))
+            metadata['depth_anchor']['mint_mcp_wrist_depths_m'] = estimates
         output.camera_joints_3d = convert_hmr_to_camera_joints(output)
 
 
@@ -306,6 +320,15 @@ def apply_mint_3d_consistency_gate(
     wrist_vector_angle_max_deg: float = 40.0,
     hand_scale_min: float = 0.7,
     hand_scale_max: float = 1.3,
+    hmr_primary: bool = False,
+    severe_wrist_distance_m: float = 0.15,
+    severe_vector_angle_deg: float = 80.0,
+    error_confirm_frames: int = 3,
+    reference_depth_tolerance_m: float = 0.08,
+    duplicate_hand_gate: bool = False,
+    duplicate_distance_m: float = 0.06,
+    reference_separation_m: float = 0.15,
+    assignment_margin_m: float = 0.08,
 ) -> tuple[list[Any], dict[str, Any]]:
     """Reject HMR samples inconsistent with an available MINT 3D prior."""
     if wrist_distance_max_m <= 0 or not 0 < wrist_vector_angle_max_deg <= 180:
@@ -324,9 +347,19 @@ def apply_mint_3d_consistency_gate(
             hand_scale_min=hand_scale_min,
             hand_scale_max=hand_scale_max,
         )
-        output.raw_backend_meta["mint_3d_consistency"] = dict(diagnostic)
         hands.append(diagnostic)
-        if diagnostic["accepted"]:
+    pair_diagnostics = []
+    if hmr_primary or duplicate_hand_gate:
+        from hmr_backends.utils.hmr_selection import refine_decisions
+        pair_diagnostics = refine_decisions(
+            output_rows, hands, primary=hmr_primary,
+            wrist_max_m=severe_wrist_distance_m, angle_max_deg=severe_vector_angle_deg,
+            confirm_frames=error_confirm_frames, depth_tolerance_m=reference_depth_tolerance_m,
+            duplicate_gate=duplicate_hand_gate, duplicate_distance_m=duplicate_distance_m,
+            separation_m=reference_separation_m, assignment_margin_m=assignment_margin_m)
+    for output, diagnostic in zip(output_rows, hands):
+        output.raw_backend_meta['mint_3d_consistency'] = dict(diagnostic)
+        if diagnostic['accepted']:
             kept.append(output)
     wrist_debug = []
     by_frame: dict[int, dict[str, np.ndarray]] = {}
@@ -348,8 +381,18 @@ def apply_mint_3d_consistency_gate(
             "wrist_vector_angle_max_deg": float(wrist_vector_angle_max_deg),
             "hand_scale_min": float(hand_scale_min),
             "hand_scale_max": float(hand_scale_max),
+            "hmr_primary": hmr_primary,
+            "severe_wrist_distance_m": severe_wrist_distance_m,
+            "severe_vector_angle_deg": severe_vector_angle_deg,
+            "error_confirm_frames": error_confirm_frames,
+            "reference_depth_tolerance_m": reference_depth_tolerance_m,
+            "duplicate_hand_gate": duplicate_hand_gate,
+            "duplicate_distance_m": duplicate_distance_m,
+            "reference_separation_m": reference_separation_m,
+            "assignment_margin_m": assignment_margin_m,
         },
         "hands": hands,
+        "pair_diagnostics": pair_diagnostics,
         "left_right_wrist_debug": wrist_debug,
         "checked_hand_count": sum(hand["status"] == "checked" for hand in hands),
         "rejected_hand_count": sum(not hand["accepted"] for hand in hands),
