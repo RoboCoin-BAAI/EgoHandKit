@@ -16,6 +16,11 @@ Input can be either:
 - an image folder, or
 - a video file
 
+External vision frontends additionally provide a validated
+`egohand.observations.v1` pickle alongside that image/video input. This
+canonical artifact is the only supported boundary for model-specific external
+frontends; conversion and projection stay outside `run.py`.
+
 The legacy pipeline has three default passes and an optional fourth:
 
 1. **Detection** — YOLO hand detection, optionally merged with Detectron2 + ViTPose
@@ -28,6 +33,12 @@ all-person ViTPose candidates, same-frame consolidation and offline physical-han
 association. It preserves original bbox/keypoints/handedness and missing frames.
 See [Observation Frontend](observation_frontend/README.md) for migration details,
 limitations, caching and physical track ID semantics.
+
+`--frontend canonical --observations <path>` bypasses EgoHandKit detection and
+tracking entirely. All downstream stages consume the same canonical observation
+schema regardless of whether the producer is MINT, ACE, an external MANO
+pipeline, or another adapter. See [Pipeline Contract](PIPELINE_CONTRACT.md) for
+the schema and validation rules.
 
 ## Prepare
 
@@ -121,6 +132,10 @@ python run.py --input test_data/images/disk --backend hamer --use_vitpose
 # All-person observation selection; no legacy bbox interpolation or label repair
 python run.py --input test_data/images/disk --frontend observations --backend hawor --gpu 0
 
+# External frontend through the canonical observation boundary
+python run.py --input assets/disk.mp4 --frontend canonical \
+  --observations /path/to/disk.observations.pkl --backend hamer --gpu 0
+
 # Explicitly enable the optional camera/world branch
 python run.py --input test_data/images/disk --backend hawor --omega_world --gpu 0
 
@@ -139,7 +154,14 @@ python run.py --input test_data/images/disk --backend hawor --force_detect
 | `--input` | required | Video file or image folder |
 | `--sequence_name` | auto | Override the sequence name used for frame caches and outputs; dataset videos default to `{session}_{camera}` to avoid collisions such as multiple `left.mp4` files |
 | `--backend` | `hawor` | `hamer`, `htm`, `wilor`, `hawor` |
-| `--frontend` | `legacy` | `legacy` or offline `observations`; the latter uses isolated output/cache directories |
+| `--frontend` | `legacy` | `legacy`, offline ViTPose `observations`, or external `canonical`; every mode uses an isolated output directory |
+| `--observations` | - | `egohand.observations.v1` pickle; required only with `--frontend canonical` |
+| `--output_root` | `test_data/hand_proc` | Root directory for run outputs |
+| `--depth_gate` / `--depth_dir` | disabled | Apply the generic depth veto before HMR; `depth_dir` is the export root containing `fast_foundation/depth_uint16_png` |
+| `--motion_gate` | disabled | Apply the image-space motion veto before HMR |
+| `--yolo_check` | disabled | Compare canonical boxes with YOLO diagnostically; never changes HMR input |
+| `--endpoint_wrist_gate` | disabled | Reject extreme raw wrist rotations only at track-fragment endpoints |
+| `--temporal_smoother` | disabled | Smooth camera-space MANO output after the endpoint gate |
 | `--gpu` | `0` | Physical CUDA GPU index. Sets both `CUDA_VISIBLE_DEVICES` and `EGL_DEVICE_ID` before importing torch, then the process uses remapped `cuda:0`. |
 | `--fps` | `15` | Output FPS for image-folder input |
 | `--render` | `True` | Render mesh overlays |
@@ -202,10 +224,39 @@ omega_world_grid_{backend}.mp4
 
 ## Caching
 
-Observation mode instead uses `test_data/hand_proc/{name}_observations/`, with
+Non-legacy modes use `test_data/hand_proc/{name}_{frontend}/`. Observation mode
+contains
 `observations_raw.pkl`, `observations_selected.pkl` and an inspectable
 `observation_selection.json`. Its signature guards against stale input, model
 configuration and selector code. Legacy results are not overwritten.
+
+Canonical mode writes the remapped, validated input to
+`stages/00_frontend/observations.pkl`, stage reports below `stages/`, and the
+versioned `egohand.results.v1` payload to `final/results.pkl`. The loader matches
+the artifact to the current frame count, order, resolution and FPS, then remaps
+its image paths by stable `frame_idx`.
+
+## External MANO Conversion
+
+`tools/convert_external_mano_to_canonical.py` converts the structured
+`front_output` MANO arrays into canonical observations by reconstructing and
+projecting 21 joints. The parameter file and image/video must be from the same
+camera:
+
+```bash
+python tools/convert_external_mano_to_canonical.py \
+  --front-output /path/to/front_output \
+  --parameter /path/to/front_output/sequences/session/left.npy \
+  --video /path/to/session/videos/left_rectified.mp4 \
+  --output /path/to/left_observations.pkl \
+  --sequence-name session_left_rectified
+```
+
+After EgoHandKit renders the canonical run, the reusable
+`scripts/render_external_mano_comparisons.sh` script renders the source MANO
+predictions and creates labeled, side-by-side videos. Its dataset paths,
+backend, cameras, render environment and comparison height are configurable
+through the environment variables documented at the top of the script.
 
 Legacy Pass 1 and Pass 2 are cached:
 
