@@ -237,6 +237,11 @@ def hand_record(
     keypoints = np.nan_to_num(uv, nan=0.0, posinf=0.0, neginf=0.0)
     confidence = np.where(valid, probability, 0.0).astype(np.float32)
 
+    camera_intrinsics = [
+        [width / (2.0 * math.tan(fov_w / 2.0)), 0.0, width / 2.0],
+        [0.0, height / (2.0 * math.tan(fov_h / 2.0)), height / 2.0],
+        [0.0, 0.0, 1.0],
+    ]
     return {
         "observation_id": f"{index}:{side}",
         "handedness": side,
@@ -258,6 +263,7 @@ def hand_record(
             "camera_frame": "opencv_x_right_y_down_z_forward",
             "joint_order": "openpose21",
             "joints_3d_camera": np.asarray(joints, dtype=np.float32).tolist(),
+            "camera_intrinsics": camera_intrinsics,
             "input_transform": "resize_only",
         },
     }

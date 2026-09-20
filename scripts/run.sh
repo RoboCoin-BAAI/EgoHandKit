@@ -117,13 +117,12 @@ ensure_exporter() {
             ;;
     esac
 
-    if [[ -f "$target_exporter" ]]; then
-        echo "[exporter] exists: $target_exporter"
+    if [[ -f "$target_exporter" ]] && cmp -s "$source_exporter" "$target_exporter"; then
+        echo "[exporter] up to date: $target_exporter"
         return
     fi
 
-    echo "[exporter] missing: $target_exporter"
-    echo "[exporter] copying from EgoHandKit"
+    echo "[exporter] synchronizing from EgoHandKit"
 
     [[ -f "$source_exporter" ]] \
         || die "source exporter not found: $source_exporter"

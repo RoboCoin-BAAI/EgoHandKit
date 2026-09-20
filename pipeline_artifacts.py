@@ -44,5 +44,6 @@ def serialize_backend_outputs(outputs: list[Any]) -> list[dict[str, Any]]:
             "cam_trans": output.cam_trans, "pred_vertices": output.pred_vertices,
             "pred_keypoints_2d": output.pred_keypoints_2d,
             "pred_joints_3d": output.pred_joints_3d,
+            "camera_joints_3d": output.camera_joints_3d,
             "raw_backend_meta": output.raw_backend_meta})
     return records

@@ -44,6 +44,26 @@ def camera_joints_from_observation(reference: Mapping[str, Any] | None) -> np.nd
     return None
 
 
+def camera_intrinsics_from_observation(reference: Mapping[str, Any] | None) -> np.ndarray | None:
+    """Read a finite pinhole intrinsic matrix from observation metadata."""
+    if reference is None:
+        return None
+    candidates: list[Mapping[str, Any]] = [reference]
+    for key in ("meta", "observation_meta"):
+        nested = reference.get(key)
+        if isinstance(nested, Mapping):
+            candidates.append(nested)
+    for candidate in candidates:
+        value = candidate.get("camera_intrinsics")
+        if value is None:
+            continue
+        intrinsics = np.asarray(value, dtype=np.float64)
+        if (intrinsics.shape == (3, 3) and np.isfinite(intrinsics).all()
+                and intrinsics[0, 0] > 0 and intrinsics[1, 1] > 0):
+            return intrinsics
+    return None
+
+
 def validate_hand_observation(hand: Mapping[str, Any]) -> None:
     if not isinstance(hand, Mapping):
         raise ValueError("hand observation must be a mapping")

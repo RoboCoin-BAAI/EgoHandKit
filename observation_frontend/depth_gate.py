@@ -8,6 +8,7 @@ Depth is used as a veto, never as the hand selector.
 from __future__ import annotations
 
 from collections import deque
+import json
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,78 @@ import cv2
 import numpy as np
 
 from observation_frontend.schema import camera_joints_from_observation
+
+
+def resolve_depth_camera_intrinsics(
+    depth_dir: str | Path,
+    *,
+    expected_reference_camera: str | None = None,
+) -> tuple[np.ndarray | None, str | None]:
+    """Read the RGB calibration used to produce registered sensor depth."""
+    root = Path(depth_dir)
+    candidates = (
+        root / "fast_foundation" / "fast_foundation_stereo_video_meta.json",
+        root / "fast_foundation_stereo_video_meta.json",
+    )
+    for path in candidates:
+        if not path.is_file():
+            continue
+        try:
+            metadata = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"Cannot parse depth camera metadata: {path}") from exc
+        values = metadata.get("intrinsics")
+        if not isinstance(values, dict):
+            continue
+        reference_camera = metadata.get("reference_camera")
+        if (expected_reference_camera is not None
+                and reference_camera is not None
+                and str(reference_camera).lower() != expected_reference_camera.lower()):
+            raise ValueError(
+                f"Depth is registered to {reference_camera!r}, not "
+                f"{expected_reference_camera!r}: {path}"
+            )
+        try:
+            fx, fy = float(values["fx"]), float(values["fy"])
+            cx, cy = float(values["cx"]), float(values["cy"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid depth camera intrinsics in: {path}") from exc
+        intrinsics = np.array(
+            [[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]],
+            dtype=np.float64,
+        )
+        if not np.isfinite(intrinsics).all() or fx <= 0 or fy <= 0:
+            raise ValueError(f"Invalid depth camera intrinsics in: {path}")
+        return intrinsics, str(path.resolve())
+    return None, None
+
+
+def scale_camera_intrinsics(
+    intrinsics: np.ndarray,
+    source_shape: tuple[int, int],
+    target_shape: tuple[int, int],
+) -> np.ndarray:
+    """Scale pixel intrinsics when registered depth is resized to RGB."""
+    source_h, source_w = source_shape
+    target_h, target_w = target_shape
+    if min(source_h, source_w, target_h, target_w) <= 0:
+        raise ValueError("camera intrinsic image dimensions must be positive")
+    scaled = np.asarray(intrinsics, dtype=np.float64).copy()
+    scaled[0, :] *= target_w / source_w
+    scaled[1, :] *= target_h / source_h
+    scaled[2, :] = [0.0, 0.0, 1.0]
+    return scaled
+
+
+def infer_camera_side(path: str | Path | None) -> str | None:
+    """Infer a left/right camera label from a conventional input name."""
+    if path is None:
+        return None
+    name = Path(path).stem.lower()
+    for side in ("left", "right"):
+        if name == side or name.startswith(f"{side}_") or name.endswith(f"_{side}"):
+            return side
+    return None
 
 
 def resolve_depth_frames(depth_dir: str | Path, frame_count: int) -> list[Path]:
@@ -58,7 +131,7 @@ def _depth_for_bbox(path: Path, bbox: Any, image_shape: tuple[int, int], *, unit
     return float(np.median(values))
 
 
-def _depth_for_point(path: Path, point: Any, image_shape: tuple[int, int], *, unit_scale: float) -> float | None:
+def depth_for_image_point(path: Path, point: Any, image_shape: tuple[int, int], *, unit_scale: float = 0.001) -> float | None:
     depth = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
     if depth is None:
         raise ValueError(f"Cannot read depth frame: {path}")
@@ -141,7 +214,7 @@ def apply_depth_gate(
                     and keypoints[0, 2] > 0
                 )
                 depth_m = (
-                    _depth_for_point(
+                    depth_for_image_point(
                         depth_path, keypoints[0, :2], image.shape[:2], unit_scale=unit_scale
                     )
                     if wrist_projection_valid else None

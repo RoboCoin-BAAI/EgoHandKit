@@ -10,6 +10,15 @@ from .base import BaseBackendRunner
 from hmr_backends.runners.schema import BackendOutputInstance
 
 
+def restore_keypoints_from_flipped_crops(keypoints, handedness, crop_size):
+    """Undo the horizontal crop flip used to canonicalize left hands."""
+    restored = np.asarray(keypoints).copy()
+    right = np.asarray(handedness).reshape(-1)
+    left = right < 0.5
+    restored[left, :, 0] = float(crop_size) - restored[left, :, 0]
+    return restored
+
+
 class BatchBackendRunner(BaseBackendRunner):
     def __init__(self, model, model_cfg, args, device, backend_name):
         super().__init__(model, model_cfg, args, device)
@@ -89,6 +98,11 @@ class BatchBackendRunner(BaseBackendRunner):
                 all_bboxes = np.stack(all_bboxes)
 
             all_pred_2d = self.model_cfg.MODEL.IMAGE_SIZE * (all_pred_2d + 0.5)
+            all_pred_2d = restore_keypoints_from_flipped_crops(
+                all_pred_2d,
+                batch['right'].detach().cpu().numpy(),
+                self.model_cfg.MODEL.IMAGE_SIZE,
+            )
             conf = np.ones((all_pred_2d.shape[0], all_pred_2d.shape[1], 1))
             all_pred_2d = np.concatenate((all_pred_2d, conf), axis=-1)
             all_pred_2d = convert_crop_coords_to_orig_img(all_bboxes.copy(), all_pred_2d, self.model_cfg.MODEL.IMAGE_SIZE)

@@ -360,6 +360,17 @@ def build_mint_observations(predictions: Mapping[str, Any], image_paths: list[st
         if predictions["timestamps"] is not None:
             frame["timestamp_ns"] = int(predictions["timestamps"][i])
         affine = predictions["orig_to_mint"][i] if predictions["orig_to_mint"] is not None else None
+        if direct_original_K:
+            original_intrinsics = K_input
+        elif affine is not None:
+            original_intrinsics = np.linalg.inv(
+                np.vstack((affine, [0, 0, 1]))
+            ) @ K_input
+        else:
+            original_intrinsics = np.array(
+                [[w / float(mint_w), 0, 0], [0, h / float(mint_h), 0], [0, 0, 1]],
+                dtype=np.float64,
+            ) @ K_input
         for side_index, side in enumerate(("left", "right")):
             if float(predictions["presence"][i, side_index]) < presence_threshold:
                 continue
@@ -385,7 +396,8 @@ def build_mint_observations(predictions: Mapping[str, Any], image_paths: list[st
                 "mint_presence_field": predictions["presence_field"],
                 "camera_frame": "opencv_x_right_y_down_z_forward",
                 "joint_order": "openpose21",
-                "joints_3d_camera": np.asarray(points, dtype=np.float32).tolist()}
+                "joints_3d_camera": np.asarray(points, dtype=np.float32).tolist(),
+                "camera_intrinsics": original_intrinsics.tolist()}
             frame["selected_for_hamer"].append({
                 "bbox_xyxy": bbox.tolist(), "vitpose_keypoints_2d": keypoints.tolist(),
                 "handedness": side, "backend_handedness": side,

@@ -6,11 +6,18 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+import cv2
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 
 from hmr_backends.utils.mint_3d_consistency import convert_mint_to_camera_joints
+from observation_frontend.depth_gate import (
+    depth_for_image_point,
+    resolve_depth_camera_intrinsics,
+    resolve_depth_frames,
+    scale_camera_intrinsics,
+)
 
 
 JOINTS_TYPE = pa.list_(pa.list_(pa.float32(), 3), 21)
@@ -53,16 +60,46 @@ def _hmr_hands(result: Mapping[str, Any]) -> dict[str, tuple[np.ndarray, float |
     return hands
 
 
-def _mint_hands(frame: Mapping[str, Any]) -> dict[str, tuple[np.ndarray, float | None, str]]:
+def _mint_hands(
+    frame: Mapping[str, Any],
+    depth_path: Path | None = None,
+    camera_intrinsics: Any = None,
+) -> dict[str, tuple[np.ndarray, float | None, str]]:
     hands = {}
+    image_shape = None
+    if depth_path is not None:
+        image = cv2.imread(str(frame["img_path"]), cv2.IMREAD_UNCHANGED)
+        if image is None:
+            raise ValueError(f"Cannot read image for Parquet depth anchoring: {frame['img_path']}")
+        image_shape = image.shape[:2]
     for observation in frame.get("hands", []):
         side = observation.get("handedness")
-        joints = convert_mint_to_camera_joints(observation)
+        wrist_depth = None
+        if depth_path is not None:
+            keypoints = np.asarray(observation.get("keypoints_2d"), dtype=np.float64)
+            if (keypoints.shape == (21, 3) and np.isfinite(keypoints[0]).all()
+                    and keypoints[0, 2] > 0):
+                wrist_depth = depth_for_image_point(
+                    depth_path, keypoints[0, :2], image_shape
+                )
+        if wrist_depth is not None:
+            joints = convert_mint_to_camera_joints(
+                observation,
+                wrist_depth_m=wrist_depth,
+                camera_intrinsics=camera_intrinsics,
+            )
+        elif depth_path is not None:
+            joints = None
+        else:
+            joints = convert_mint_to_camera_joints(observation)
         if side not in {"left", "right"} or joints is None:
             continue
         confidence = observation.get("confidence")
         confidence = float(confidence) if confidence is not None else None
-        hands[side] = (joints.astype(np.float32), confidence, str(observation.get("source", "mint")))
+        hands[side] = (
+            joints.astype(np.float32), confidence,
+            str(observation.get("source", "mint")),
+        )
     return hands
 
 
@@ -70,11 +107,31 @@ def export_hand_tracking_parquet(
     frames: Sequence[Mapping[str, Any]],
     results: Mapping[str, Mapping[str, Any]],
     path: str | Path,
+    *,
+    depth_dir: str | Path | None = None,
+    expected_reference_camera: str | None = None,
 ) -> Path:
     """Export accepted HMR joints, falling back to an available MINT prior."""
     rows = []
+    depth_paths = resolve_depth_frames(depth_dir, len(frames)) if depth_dir is not None else None
+    sensor_intrinsics = (
+        resolve_depth_camera_intrinsics(
+            depth_dir, expected_reference_camera=expected_reference_camera
+        )[0]
+        if depth_dir is not None else None
+    )
     for frame in frames:
-        mint = _mint_hands(frame)
+        depth_path = depth_paths[int(frame["frame_idx"])] if depth_paths is not None else None
+        frame_intrinsics = sensor_intrinsics
+        if frame_intrinsics is not None:
+            depth_image = cv2.imread(str(depth_path), cv2.IMREAD_UNCHANGED)
+            image = cv2.imread(str(frame["img_path"]), cv2.IMREAD_UNCHANGED)
+            if depth_image is None or image is None:
+                raise ValueError(f"Cannot read RGB/depth frame {frame['frame_idx']} for Parquet export")
+            frame_intrinsics = scale_camera_intrinsics(
+                frame_intrinsics, depth_image.shape[:2], image.shape[:2]
+            )
+        mint = _mint_hands(frame, depth_path, frame_intrinsics)
         selected = dict(mint)
         selected.update(_hmr_hands(results.get(frame["img_path"], {})))
         sources = {selected[side][2] for side in ("left", "right") if side in selected}

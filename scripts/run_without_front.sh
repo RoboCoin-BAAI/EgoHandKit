@@ -10,6 +10,7 @@ CONDA_ENV="egohandkit"
 EGOHANDKIT_ROOT="/home/user/EgoHandKit"
 MINT_ROOT="/home/user/wuji-ego-mint"
 ACE_ROOT="/home/user/ACE-Ego-Hand"
+LOCAL_MINT_EXPORTER="$EGOHANDKIT_ROOT/scripts/export_egohandkit_cache_mint.py"
 MINT_EXPORTER="$MINT_ROOT/scripts/export_egohandkit_cache.py"
 ACE_EXPORTER="$ACE_ROOT/scripts/export_egohandkit_cache.py"
 
@@ -126,8 +127,13 @@ echo "============================================================"
 
 if [[ "$FRONTEND" == "mint" ]]; then
 
-    [[ -f "$MINT_EXPORTER" ]] \
-        || die "MINT exporter not found: $MINT_EXPORTER"
+    [[ -f "$LOCAL_MINT_EXPORTER" ]] \
+        || die "MINT exporter source not found: $LOCAL_MINT_EXPORTER"
+
+    if ! cmp -s "$LOCAL_MINT_EXPORTER" "$MINT_EXPORTER"; then
+        cp "$LOCAL_MINT_EXPORTER" "$MINT_EXPORTER"
+        echo "[exporter] synchronized: $MINT_EXPORTER"
+    fi
 
     echo "[1/2] MINT -> canonical"
 

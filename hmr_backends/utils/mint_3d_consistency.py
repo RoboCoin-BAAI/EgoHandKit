@@ -3,11 +3,22 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from pathlib import Path
 from typing import Any
 
+import cv2
 import numpy as np
 
-from observation_frontend.schema import camera_joints_from_observation
+from observation_frontend.depth_gate import (
+    depth_for_image_point,
+    resolve_depth_camera_intrinsics,
+    resolve_depth_frames,
+    scale_camera_intrinsics,
+)
+from observation_frontend.schema import (
+    camera_intrinsics_from_observation,
+    camera_joints_from_observation,
+)
 
 
 WRIST = 0
@@ -27,13 +38,60 @@ def _joints(value: Any) -> np.ndarray | None:
     return array
 
 
-def convert_mint_to_camera_joints(reference: Mapping[str, Any] | None) -> np.ndarray | None:
-    """Read a MINT 21-joint prior from canonical observation metadata."""
-    return camera_joints_from_observation(reference)
+def _depth_anchored_joints(joints: np.ndarray, keypoints_2d: Any,
+                           wrist_depth_m: float, camera_intrinsics: Any) -> np.ndarray | None:
+    keypoints = np.asarray(keypoints_2d, dtype=np.float64)
+    intrinsics = np.asarray(camera_intrinsics, dtype=np.float64)
+    if keypoints.ndim == 2 and keypoints.shape[0] >= 21 and keypoints.shape[1] >= 3:
+        keypoints = keypoints[:21, :3]
+    if (keypoints.shape != (21, 3) or intrinsics.shape != (3, 3)
+            or not np.isfinite(intrinsics).all() or not np.isfinite(wrist_depth_m)
+            or wrist_depth_m <= 0 or intrinsics[0, 0] <= 0 or intrinsics[1, 1] <= 0
+            or not np.isfinite(keypoints[WRIST]).all() or keypoints[WRIST, 2] <= 0):
+        return None
+    relative = joints - joints[[WRIST]]
+    depths = float(wrist_depth_m) + relative[:, 2]
+    if not np.isfinite(depths).all() or np.any(depths <= 1e-6):
+        return None
+    result = np.empty((21, 3), dtype=np.float64)
+    result[:, 2] = depths
+    valid_projection = np.isfinite(keypoints).all(axis=1) & (keypoints[:, 2] > 0)
+    result[valid_projection, 0] = (
+        (keypoints[valid_projection, 0] - intrinsics[0, 2])
+        * depths[valid_projection] / intrinsics[0, 0]
+    )
+    result[valid_projection, 1] = (
+        (keypoints[valid_projection, 1] - intrinsics[1, 2])
+        * depths[valid_projection] / intrinsics[1, 1]
+    )
+    wrist = result[WRIST].copy()
+    result[~valid_projection] = wrist + relative[~valid_projection]
+    return result
 
 
-def convert_hmr_to_camera_joints(output: Any) -> np.ndarray | None:
-    """Convert root-relative HMR MANO joints to OpenCV camera coordinates."""
+def convert_mint_to_camera_joints(
+    reference: Mapping[str, Any] | None,
+    *,
+    wrist_depth_m: float | None = None,
+    camera_intrinsics: Any = None,
+) -> np.ndarray | None:
+    """Convert MINT joints, optionally anchoring them to sensor wrist depth."""
+    joints = camera_joints_from_observation(reference)
+    if joints is None or wrist_depth_m is None:
+        return joints
+    if camera_intrinsics is None:
+        camera_intrinsics = camera_intrinsics_from_observation(reference)
+    keypoints = reference.get("keypoints_2d") if isinstance(reference, Mapping) else None
+    return _depth_anchored_joints(joints, keypoints, wrist_depth_m, camera_intrinsics)
+
+
+def convert_hmr_to_camera_joints(
+    output: Any,
+    *,
+    wrist_depth_m: float | None = None,
+    camera_intrinsics: Any = None,
+) -> np.ndarray | None:
+    """Back-project HMR 2D joints using sensor wrist depth and relative MANO Z."""
     joints = _joints(getattr(output, "pred_joints_3d", None))
     if joints is None:
         metadata = getattr(output, "raw_backend_meta", {})
@@ -43,10 +101,97 @@ def convert_hmr_to_camera_joints(output: Any) -> np.ndarray | None:
     joints = joints.copy()
     if getattr(output, "hand_side", None) == "left":
         joints[:, 0] *= -1
-    translation = np.asarray(getattr(output, "cam_trans", None), dtype=np.float64)
-    if translation.shape != (3,) or not np.isfinite(translation).all():
+    metadata = getattr(output, "raw_backend_meta", {})
+    anchor = metadata.get("depth_anchor", {}) if isinstance(metadata, Mapping) else {}
+    if wrist_depth_m is None:
+        wrist_depth_m = anchor.get("hmr_wrist_depth_m")
+    if camera_intrinsics is None:
+        camera_intrinsics = anchor.get("camera_intrinsics")
+    if wrist_depth_m is None or camera_intrinsics is None:
+        # Preserve the historical result payload when the optional sensor
+        # anchoring features are disabled. Once an anchor record exists,
+        # missing sensor data must remain explicit rather than falling back to
+        # HaMeR's virtual rendering depth.
+        if anchor:
+            return None
+        translation = np.asarray(getattr(output, "cam_trans", None), dtype=np.float64)
+        if translation.shape != (3,) or not np.isfinite(translation).all():
+            return None
+        return joints + translation
+    return _depth_anchored_joints(
+        joints, getattr(output, "pred_keypoints_2d", None),
+        wrist_depth_m, camera_intrinsics,
+    )
+
+
+def _valid_wrist_pixel(keypoints_2d: Any) -> np.ndarray | None:
+    keypoints = np.asarray(keypoints_2d, dtype=np.float64)
+    if (keypoints.ndim != 2 or keypoints.shape[0] < 1 or keypoints.shape[1] < 3
+            or not np.isfinite(keypoints[WRIST, :3]).all()
+            or keypoints[WRIST, 2] <= 0):
         return None
-    return joints + translation
+    return keypoints[WRIST, :2]
+
+
+def attach_depth_anchors(outputs: Iterable[Any], depth_dir: str | Path,
+                         frame_count: int, *, unit_scale: float = 0.001,
+                         expected_reference_camera: str | None = None) -> None:
+    """Attach sensor-wrist anchors for both MINT and HMR projected wrists."""
+    rows = list(outputs)
+    if not rows:
+        return
+    depth_paths = resolve_depth_frames(depth_dir, frame_count)
+    sensor_intrinsics, sensor_intrinsics_source = resolve_depth_camera_intrinsics(
+        depth_dir, expected_reference_camera=expected_reference_camera
+    )
+    depth_shapes: dict[Path, tuple[int, int]] = {}
+    image_shapes: dict[str, tuple[int, int]] = {}
+    for output in rows:
+        image_shape = image_shapes.get(output.img_path)
+        if image_shape is None:
+            image = cv2.imread(str(output.img_path), cv2.IMREAD_UNCHANGED)
+            if image is None:
+                raise ValueError(f"Cannot read image for HMR depth anchoring: {output.img_path}")
+            image_shape = image.shape[:2]
+            image_shapes[output.img_path] = image_shape
+        metadata = output.raw_backend_meta
+        intrinsics = sensor_intrinsics
+        intrinsics_source = sensor_intrinsics_source
+        depth_path = depth_paths[int(output.frame_idx)]
+        if intrinsics is not None:
+            depth_shape = depth_shapes.get(depth_path)
+            if depth_shape is None:
+                depth_image = cv2.imread(str(depth_path), cv2.IMREAD_UNCHANGED)
+                if depth_image is None:
+                    raise ValueError(f"Cannot read depth frame: {depth_path}")
+                depth_shape = depth_image.shape[:2]
+                depth_shapes[depth_path] = depth_shape
+            intrinsics = scale_camera_intrinsics(
+                intrinsics, depth_shape, image_shape
+            )
+        if intrinsics is None:
+            intrinsics = camera_intrinsics_from_observation(metadata)
+            intrinsics_source = "canonical_observation"
+        mint_pixel = _valid_wrist_pixel(metadata.get("keypoints_2d"))
+        hmr_pixel = _valid_wrist_pixel(output.pred_keypoints_2d)
+        mint_depth = (
+            depth_for_image_point(depth_path, mint_pixel, image_shape, unit_scale=unit_scale)
+            if mint_pixel is not None else None
+        )
+        hmr_depth = (
+            depth_for_image_point(depth_path, hmr_pixel, image_shape, unit_scale=unit_scale)
+            if hmr_pixel is not None else None
+        )
+        metadata["depth_anchor"] = {
+            "camera_intrinsics": intrinsics.tolist() if intrinsics is not None else None,
+            "camera_intrinsics_source": intrinsics_source,
+            "mint_wrist_depth_m": mint_depth,
+            "hmr_wrist_depth_m": hmr_depth,
+            "mint_wrist_pixel": mint_pixel.tolist() if mint_pixel is not None else None,
+            "hmr_wrist_pixel": hmr_pixel.tolist() if hmr_pixel is not None else None,
+            "source": "registered_depth_sensor",
+        }
+        output.camera_joints_3d = convert_hmr_to_camera_joints(output)
 
 
 def _vector_angle_deg(first: np.ndarray, second: np.ndarray) -> float | None:
@@ -68,11 +213,27 @@ def _diagnostic(output: Any, *, wrist_distance_max_m: float,
         "vector_angle_deg": None,
         "vector_angles_deg": None,
         "scale_ratio": None,
+        "mint_wrist_sensor_depth_m": None,
+        "hmr_wrist_sensor_depth_m": None,
         "accepted": True,
         "reject_reason": None,
         "reject_reasons": [],
     }
-    mint = convert_mint_to_camera_joints(getattr(output, "raw_backend_meta", {}))
+    metadata = getattr(output, "raw_backend_meta", {})
+    anchor = metadata.get("depth_anchor", {})
+    base.update({
+        "mint_wrist_sensor_depth_m": anchor.get("mint_wrist_depth_m"),
+        "hmr_wrist_sensor_depth_m": anchor.get("hmr_wrist_depth_m"),
+    })
+    mint_depth = anchor.get("mint_wrist_depth_m")
+    mint = (
+        convert_mint_to_camera_joints(
+            metadata,
+            wrist_depth_m=mint_depth,
+            camera_intrinsics=anchor.get("camera_intrinsics"),
+        )
+        if mint_depth is not None else None
+    )
     if mint is None:
         return {**base, "status": "missing_mint_reference"}
     hmr = convert_hmr_to_camera_joints(output)

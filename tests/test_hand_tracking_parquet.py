@@ -1,5 +1,6 @@
 import numpy as np
 import pyarrow.parquet as pq
+import cv2
 
 from hmr_backends.utils.hand_tracking_parquet import export_hand_tracking_parquet
 
@@ -68,3 +69,55 @@ def test_parquet_round_trip_and_missing_hmr_keeps_mint(tmp_path):
     assert missing["left_confidence"] is None
     assert missing["right_confidence"] is None
     assert missing["source"] == "none"
+
+
+def test_parquet_mint_fallback_is_anchored_to_sensor_wrist_depth(tmp_path):
+    image_path = tmp_path / "frame.jpg"
+    assert cv2.imwrite(str(image_path), np.zeros((20, 20, 3), dtype=np.uint8))
+    depth_dir = tmp_path / "depth/fast_foundation/depth_uint16_png"
+    depth_dir.mkdir(parents=True)
+    assert cv2.imwrite(
+        str(depth_dir / "frame_000000_depth_mm.png"),
+        np.full((20, 20), 500, dtype=np.uint16),
+    )
+    joints = np.zeros((21, 3), dtype=np.float32)
+    joints[:, 2] = 1.0
+    observation = _observation("left", joints)
+    observation["keypoints_2d"][:, :] = [10.0, 10.0, 1.0]
+    observation["meta"]["camera_intrinsics"] = [
+        [100.0, 0.0, 10.0], [0.0, 100.0, 10.0], [0.0, 0.0, 1.0]
+    ]
+    frames = [{"frame_idx": 0, "img_path": str(image_path),
+               "timestamp_ns": None, "hands": [observation]}]
+
+    path = tmp_path / "anchored.parquet"
+    export_hand_tracking_parquet(frames, {}, path, depth_dir=tmp_path / "depth")
+    row = pq.read_table(path).to_pylist()[0]
+
+    assert row["left_present"] is True
+    assert np.isclose(row["left_joints_3d"][0][2], 0.5)
+
+
+def test_parquet_does_not_mix_unanchored_mint_when_sensor_depth_is_missing(tmp_path):
+    image_path = tmp_path / "frame.jpg"
+    assert cv2.imwrite(str(image_path), np.zeros((20, 20, 3), dtype=np.uint8))
+    depth_dir = tmp_path / "depth/fast_foundation/depth_uint16_png"
+    depth_dir.mkdir(parents=True)
+    assert cv2.imwrite(
+        str(depth_dir / "frame_000000_depth_mm.png"),
+        np.zeros((20, 20), dtype=np.uint16),
+    )
+    joints = np.zeros((21, 3), dtype=np.float32)
+    joints[:, 2] = 0.8
+    observation = _observation("left", joints)
+    observation["keypoints_2d"][:, :] = [10.0, 10.0, 1.0]
+    frames = [{"frame_idx": 0, "img_path": str(image_path),
+               "timestamp_ns": None, "hands": [observation]}]
+
+    path = tmp_path / "missing_depth.parquet"
+    export_hand_tracking_parquet(frames, {}, path, depth_dir=tmp_path / "depth")
+    row = pq.read_table(path).to_pylist()[0]
+
+    assert row["left_present"] is False
+    assert np.isnan(row["left_joints_3d"]).all()
+    assert row["source"] == "none"

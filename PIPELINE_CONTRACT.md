@@ -25,6 +25,19 @@ result. A rejected HMR sample is removed before endpoint gating and smoothing;
 the canonical observation remains available as the Parquet fallback. Missing
 MINT geometry never rejects an HMR sample.
 
+Before that comparison, both sources are anchored independently to registered
+sensor depth at their own projected wrist pixel. Their remaining joint depths
+come from root-relative MANO geometry, and each joint's image projection is
+back-projected with the declared camera intrinsics. HaMeR's virtual
+weak-perspective `cam_trans.z` is used for rendering only and is never treated
+as metric depth. The same sensor-anchored representation is written to Parquet.
+Back-projection prefers the calibrated RGB intrinsics in
+`fast_foundation/fast_foundation_stereo_video_meta.json`; canonical/MINT
+intrinsics are only a compatibility fallback when depth calibration metadata
+is unavailable.
+An observation without a valid sensor wrist depth is not exported as metric
+3D; Parquet presence is false and its fixed-size joint array contains NaNs.
+
 The endpoint wrist gate groups raw backend outputs by track, side, and fragment,
 splits on missing frame indices, and for runs of at least four frames rejects
 only the original start or end when its adjacent raw wrist rotation exceeds

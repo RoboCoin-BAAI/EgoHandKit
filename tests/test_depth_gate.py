@@ -1,9 +1,15 @@
+import json
 from pathlib import Path
 
 import cv2
 import numpy as np
 
-from observation_frontend.depth_gate import apply_depth_gate, resolve_depth_frames
+from observation_frontend.depth_gate import (
+    apply_depth_gate,
+    resolve_depth_camera_intrinsics,
+    resolve_depth_frames,
+    scale_camera_intrinsics,
+)
 
 
 def _write_depth_sequence(root: Path, values: list[int], shape=(40, 60)) -> Path:
@@ -157,3 +163,44 @@ def test_depth_gate_rejects_absolute_limit_and_missing_frame_is_explicit(tmp_pat
         assert "missing frame" in str(exc)
     else:
         raise AssertionError("missing depth frame should fail explicitly")
+
+
+def test_depth_camera_intrinsics_come_from_stereo_metadata(tmp_path):
+    root = _write_depth_sequence(tmp_path / "depth", [500])
+    metadata_path = root / "fast_foundation" / "fast_foundation_stereo_video_meta.json"
+    metadata_path.write_text(json.dumps({
+        "intrinsics": {"fx": 448.0, "fy": 449.0, "cx": 906.0, "cy": 547.0}
+    }))
+
+    intrinsics, source = resolve_depth_camera_intrinsics(root)
+
+    assert np.allclose(intrinsics, [
+        [448.0, 0.0, 906.0],
+        [0.0, 449.0, 547.0],
+        [0.0, 0.0, 1.0],
+    ])
+    assert source == str(metadata_path.resolve())
+
+
+def test_depth_camera_reference_must_match_input_camera(tmp_path):
+    root = _write_depth_sequence(tmp_path / "depth", [500])
+    metadata_path = root / "fast_foundation" / "fast_foundation_stereo_video_meta.json"
+    metadata_path.write_text(json.dumps({
+        "reference_camera": "left",
+        "intrinsics": {"fx": 448.0, "fy": 449.0, "cx": 906.0, "cy": 547.0},
+    }))
+
+    try:
+        resolve_depth_camera_intrinsics(root, expected_reference_camera="right")
+    except ValueError as exc:
+        assert "registered to 'left'" in str(exc)
+    else:
+        raise AssertionError("right RGB must not use left-registered depth")
+
+
+def test_camera_intrinsics_scale_with_resized_registered_depth():
+    intrinsics = np.array([[400.0, 0.0, 200.0], [0.0, 500.0, 100.0], [0.0, 0.0, 1.0]])
+
+    scaled = scale_camera_intrinsics(intrinsics, (200, 400), (100, 200))
+
+    assert np.allclose(scaled, [[200.0, 0.0, 100.0], [0.0, 250.0, 50.0], [0.0, 0.0, 1.0]])

@@ -247,7 +247,14 @@ When enabled, the 3D gate writes
 `stages/45_mint_3d_consistency/mint_3d_consistency.json`. Rejected backend
 samples do not enter the endpoint gate or smoother. Parquet export prefers the
 accepted HMR joints and falls back to the canonical MINT joints when HMR is
-missing or rejected.
+missing or rejected. Both MINT and HMR joints are first anchored to registered
+sensor depth at their respective projected wrist pixels; HaMeR's virtual
+camera translation is not used as metric depth. When
+`fast_foundation_stereo_video_meta.json` is present under the depth root, its
+calibrated RGB intrinsics are used for back-projection; canonical/MINT
+intrinsics are only a compatibility fallback.
+If no valid sensor depth exists around a MINT wrist, that hand remains in the
+canonical stage diagnostics but is not emitted as metric 3D in Parquet.
 
 ## External MANO Conversion
 

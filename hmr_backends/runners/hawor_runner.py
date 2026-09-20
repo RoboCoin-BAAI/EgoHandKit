@@ -1,9 +1,22 @@
 import numpy as np
 import torch
 from tqdm import tqdm
-from bbox_utils import convert_crop_coords_to_orig_img
 from .base import BaseBackendRunner
 from hmr_backends.runners.schema import BackendOutputInstance
+
+
+def project_hawor_joints(joints, translation, focal, center, *, is_left):
+    """Project HaWoR MANO joints into the original, unflipped image."""
+    local = np.asarray(joints, dtype=np.float64).copy()
+    if is_left:
+        local[:, 0] *= -1
+    camera = local + np.asarray(translation, dtype=np.float64).reshape(1, 3)
+    valid = np.isfinite(camera).all(axis=1) & (camera[:, 2] > 1e-8)
+    keypoints = np.zeros((len(camera), 3), dtype=np.float64)
+    keypoints[valid, 0] = focal * camera[valid, 0] / camera[valid, 2] + center[0]
+    keypoints[valid, 1] = focal * camera[valid, 1] / camera[valid, 2] + center[1]
+    keypoints[valid, 2] = 1.0
+    return keypoints
 
 
 class HaworBackendRunner(BaseBackendRunner):
@@ -27,7 +40,6 @@ class HaworBackendRunner(BaseBackendRunner):
             pred_rotmat = results['pred_rotmat'].cpu().numpy()
             pred_shape = results['pred_shape'].cpu().numpy()
             pred_trans = results['pred_trans'].cpu().numpy()[:, 0, :]
-            pred_keypoints_2d = results['pred_keypoints_2d'].cpu().numpy() if 'pred_keypoints_2d' in results else None
             for local_i, inst in enumerate(seg_instances):
                 rotmat = pred_rotmat[local_i]
                 mano_params = {
@@ -40,19 +52,19 @@ class HaworBackendRunner(BaseBackendRunner):
                     'pred_rotmat': torch.from_numpy(rotmat).unsqueeze(0).to(self.device),
                     'pred_shape': torch.from_numpy(pred_shape[local_i]).unsqueeze(0).to(self.device),
                 })
-                if pred_keypoints_2d is None:
-                    keypoints = np.zeros((21, 3), dtype=np.float32)
-                    keypoints[:, 2] = 1
-                else:
-                    keypoints = pred_keypoints_2d[local_i]
-                    keypoints = np.concatenate([keypoints, np.ones((keypoints.shape[0], 1), dtype=np.float32)], axis=-1)
-                    keypoints = self.model.cfg.MODEL.IMAGE_SIZE * (keypoints + 0.5)
-                    keypoints = convert_crop_coords_to_orig_img(
-                        np.array([inst.bbox_square], dtype=np.float32),
-                        keypoints[None],
-                        self.model.cfg.MODEL.IMAGE_SIZE,
-                    )[0]
-                    keypoints[:, -1] = 1
+                joints = None
+                if hasattr(mano_output, 'joints'):
+                    joints = mano_output.joints[0, :21].detach().cpu().numpy()
+                keypoints = (
+                    project_hawor_joints(
+                        joints,
+                        pred_trans[local_i],
+                        img_focal,
+                        img_center,
+                        is_left=(hand_side == 'left'),
+                    )
+                    if joints is not None else np.zeros((21, 3), dtype=np.float64)
+                )
                 outputs.append(BackendOutputInstance(
                     frame_idx=inst.frame_idx,
                     img_path=inst.img_path,
@@ -61,10 +73,7 @@ class HaworBackendRunner(BaseBackendRunner):
                     cam_trans=pred_trans[local_i],
                     pred_vertices=mano_output.vertices[0].detach().cpu().numpy(),
                     pred_keypoints_2d=keypoints,
-                    pred_joints_3d=(
-                        mano_output.joints[0, :21].detach().cpu().numpy()
-                        if hasattr(mano_output, 'joints') else None
-                    ),
+                    pred_joints_3d=joints,
                     raw_backend_meta={
                         'backend': 'hawor',
                         'pred_rotmat': rotmat,

@@ -21,10 +21,12 @@ from hmr_backends.utils.mint_style_smoother import smooth_hand_sequence
 from hmr_backends.utils.endpoint_wrist_gate import apply_endpoint_wrist_gate
 from hmr_backends.utils.mint_3d_consistency import (
     apply_mint_3d_consistency_gate,
+    attach_depth_anchors,
     convert_hmr_to_camera_joints,
 )
 from bbox_utils import create_video_from_images
 from pipeline_artifacts import ArtifactStore, serialize_backend_outputs
+from observation_frontend.depth_gate import infer_camera_side
 
 
 # ---------------------------------------------------------------------------
@@ -195,7 +197,9 @@ def _assemble_results(raw_outputs, cleaned_data):
             tracked_ids.append(tracked_id)
             extra_data.append(fo.pred_keypoints_2d.tolist())
             backend_meta.append(fo.raw_backend_meta)
-            joints_3d.append(convert_hmr_to_camera_joints(fo))
+            camera_joints = convert_hmr_to_camera_joints(fo)
+            fo.camera_joints_3d = camera_joints
+            joints_3d.append(camera_joints)
         results_dict[img_path] = {
             'mano': mano_list,
             'cam_trans': cam_list,
@@ -314,6 +318,37 @@ def _recompute_geometry(model, params, device):
     )
 
 
+def _reproject_smoothed_outputs(raw_outputs, backend_bundle):
+    """Keep final 2D rays consistent with smoothed MANO/camera parameters."""
+    for output in raw_outputs:
+        joints = np.asarray(output.pred_joints_3d, dtype=np.float64).copy()
+        if joints.shape != (21, 3):
+            continue
+        if output.hand_side == "left":
+            joints[:, 0] *= -1
+        camera_joints = joints + np.asarray(output.cam_trans, dtype=np.float64)
+        if not np.isfinite(camera_joints).all() or np.any(camera_joints[:, 2] <= 1e-8):
+            continue
+        image = cv2.imread(str(output.img_path), cv2.IMREAD_UNCHANGED)
+        if image is None:
+            raise ValueError(f"Cannot read image for smoothed projection: {output.img_path}")
+        height, width = image.shape[:2]
+        if backend_bundle.backend_name == "hawor":
+            focal = float(output.raw_backend_meta["img_focal"])
+        else:
+            focal = (
+                backend_bundle.model_cfg.EXTRA.FOCAL_LENGTH
+                / backend_bundle.model_cfg.MODEL.IMAGE_SIZE
+                * max(width, height)
+            )
+        projected = np.column_stack((
+            focal * camera_joints[:, 0] / camera_joints[:, 2] + width / 2.0,
+            focal * camera_joints[:, 1] / camera_joints[:, 2] + height / 2.0,
+            np.ones(21, dtype=np.float64),
+        ))
+        output.pred_keypoints_2d = projected
+
+
 # ---------------------------------------------------------------------------
 # Rendering
 # ---------------------------------------------------------------------------
@@ -373,7 +408,10 @@ def _render_results(raw_outputs, cleaned_data, renderer, args, out_dir, fps, lef
         input_img = img_cv2.astype(np.float32)[:, :, ::-1] / 255.0
         input_img = np.concatenate([input_img, np.ones_like(input_img[:, :, :1])], axis=2)
         input_img_overlay = input_img[:, :, :3] * (1 - cam_view[:, :, 3:]) + cam_view[:, :, :3] * cam_view[:, :, 3:]
-        cv2.imwrite(os.path.join(render_dir, f'{img_fn}.jpg'), 255 * input_img_overlay[:, :, ::-1])
+        rendered_bgr = np.clip(
+            255.0 * input_img_overlay[:, :, ::-1], 0, 255
+        ).astype(np.uint8)
+        cv2.imwrite(os.path.join(render_dir, f'{img_fn}.jpg'), rendered_bgr)
     if args.render and os.path.exists(render_dir):
         video_path = os.path.join(str(out_dir), 'final', 'render.mp4')
         create_video_from_images(render_dir, video_path, fps=fps)
@@ -384,7 +422,9 @@ def _export_hand_tracking_if_enabled(cleaned_data, results, args, out_dir):
         return None
     from hmr_backends.utils.hand_tracking_parquet import export_hand_tracking_parquet
     return export_hand_tracking_parquet(
-        cleaned_data, results, Path(out_dir) / "final" / "hand_tracking.parquet"
+        cleaned_data, results, Path(out_dir) / "final" / "hand_tracking.parquet",
+        depth_dir=args.depth_dir,
+        expected_reference_camera=infer_camera_side(getattr(args, "input", None)),
     )
 
 
@@ -457,6 +497,12 @@ def run_mesh_recovery(cleaned_data, backend_bundle, renderer, args, out_dir, fps
     runner = build_runner(backend_bundle, args, device)
     left_policy = build_left_hand_policy(device=device)
     raw_outputs = runner.infer(inputs)
+    if (getattr(args, 'mint_3d_consistency_gate', False)
+            or getattr(args, 'hand_tracking_parquet', False)):
+        attach_depth_anchors(
+            raw_outputs, args.depth_dir, len(cleaned_data),
+            expected_reference_camera=infer_camera_side(getattr(args, "input", None)),
+        )
     artifacts = ArtifactStore(out_dir)
     artifacts.write_pickle(artifacts.stage_dir("40_backend_raw") / "outputs.pkl", serialize_backend_outputs(raw_outputs))
     artifacts.write_json(artifacts.stage_dir("40_backend_raw") / "summary.json", {
@@ -481,6 +527,11 @@ def run_mesh_recovery(cleaned_data, backend_bundle, renderer, args, out_dir, fps
         artifacts.write_json(
             consistency_stage / "mint_3d_consistency.json", consistency_report
         )
+        print(
+            "MINT 3D consistency: "
+            f"kept {len(raw_outputs)}/{len(checked_outputs)} HMR hands "
+            f"(rejected {consistency_report['rejected_hand_count']})"
+        )
     if getattr(args, 'endpoint_wrist_gate', False):
         raw_outputs, pose_report = apply_endpoint_wrist_gate(
             raw_outputs, endpoint_wrist_max_deg=args.endpoint_wrist_max_deg)
@@ -489,6 +540,13 @@ def run_mesh_recovery(cleaned_data, backend_bundle, renderer, args, out_dir, fps
         artifacts.write_json(artifacts.stage_dir("50_endpoint_wrist_gate") / "report.json", pose_report)
     if getattr(args, 'temporal_smoother', False):
         _smooth_raw_outputs(raw_outputs, backend_bundle, device, args)
+        if (getattr(args, 'mint_3d_consistency_gate', False)
+                or getattr(args, 'hand_tracking_parquet', False)):
+            _reproject_smoothed_outputs(raw_outputs, backend_bundle)
+            attach_depth_anchors(
+                raw_outputs, args.depth_dir, len(cleaned_data),
+                expected_reference_camera=infer_camera_side(getattr(args, "input", None)),
+            )
         artifacts.write_pickle(artifacts.stage_dir("60_smoother") / "outputs.pkl", serialize_backend_outputs(raw_outputs))
         artifacts.write_json(artifacts.stage_dir("60_smoother") / "summary.json", {
             "schema_version": "egohand.smoother.v1", "q": args.smoother_q,

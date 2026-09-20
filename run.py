@@ -264,6 +264,8 @@ def validate_cli_args(parser, args):
         parser.error('--endpoint_wrist_max_deg must be positive')
     if args.depth_gate and not args.depth_dir:
         parser.error('--depth_gate requires --depth_dir')
+    if (args.mint_3d_consistency_gate or args.hand_tracking_parquet) and not args.depth_dir:
+        parser.error('--mint_3d_consistency_gate and --hand_tracking_parquet require --depth_dir')
     if args.mint_depth_wrist_threshold_m <= 0:
         parser.error('--mint_depth_wrist_threshold_m must be positive')
     if args.motion_center_threshold <= 0 or args.motion_size_ratio < 1:
@@ -472,6 +474,12 @@ def main():
             depth_stage = artifacts.stage_dir("10_depth_gate")
             save_observation_sequence(pipeline_sequence, depth_stage / "observations.pkl")
             artifacts.write_json(depth_stage / "report.json", depth_report)
+            kept_count = sum(len(frame["hands"]) for frame in gated_frames)
+            print(
+                "Depth gate: "
+                f"kept {kept_count}/{frontend_summary['hand_instance_count']} hands "
+                f"(rejected {depth_report['rejected_observations']})"
+            )
         if args.motion_gate:
             gated_frames, motion_report = apply_motion_gate(
                 pipeline_sequence["frames"], img_paths, center_jump_threshold=args.motion_center_threshold,
