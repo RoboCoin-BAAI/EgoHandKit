@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -329,6 +330,8 @@ def apply_mint_3d_consistency_gate(
     duplicate_distance_m: float = 0.06,
     reference_separation_m: float = 0.15,
     assignment_margin_m: float = 0.08,
+    duplicate_image_gate: bool = False,
+    duplicate_image_config: Any = None,
 ) -> tuple[list[Any], dict[str, Any]]:
     """Reject HMR samples inconsistent with an available MINT 3D prior."""
     if wrist_distance_max_m <= 0 or not 0 < wrist_vector_angle_max_deg <= 180:
@@ -339,6 +342,13 @@ def apply_mint_3d_consistency_gate(
     kept = []
     hands = []
     output_rows = list(outputs)
+    image_pairs = []
+    if duplicate_image_gate:
+        from hmr_backends.utils.hand_identity import (
+            DuplicateImageConfig, diagnose_image_duplicates, position_reference,
+        )
+        duplicate_image_config = duplicate_image_config or DuplicateImageConfig()
+        image_pairs = diagnose_image_duplicates(output_rows, duplicate_image_config)
     for output in output_rows:
         diagnostic = _diagnostic(
             output,
@@ -357,7 +367,16 @@ def apply_mint_3d_consistency_gate(
             confirm_frames=error_confirm_frames, depth_tolerance_m=reference_depth_tolerance_m,
             duplicate_gate=duplicate_hand_gate, duplicate_distance_m=duplicate_distance_m,
             separation_m=reference_separation_m, assignment_margin_m=assignment_margin_m)
+    image_pairs_by_frame = {pair['frame_idx']: pair for pair in image_pairs}
     for output, diagnostic in zip(output_rows, hands):
+        if duplicate_image_gate:
+            diagnostic['position_reference_quality'] = position_reference(output.raw_backend_meta)[1]
+        pair = image_pairs_by_frame.get(output.frame_idx)
+        if pair is not None:
+            if pair['rejected_side'] == output.hand_side:
+                diagnostic.update(accepted=False, reject_reason='duplicate_hand_image_depth',
+                                  reject_reasons=['duplicate_hand_image_depth'])
+                pair['decision_effect'] = 'frontend_fallback'
         output.raw_backend_meta['mint_3d_consistency'] = dict(diagnostic)
         if diagnostic['accepted']:
             kept.append(output)
@@ -390,9 +409,12 @@ def apply_mint_3d_consistency_gate(
             "duplicate_distance_m": duplicate_distance_m,
             "reference_separation_m": reference_separation_m,
             "assignment_margin_m": assignment_margin_m,
+            "duplicate_image_gate": duplicate_image_gate,
+            "duplicate_image_config": asdict(duplicate_image_config) if duplicate_image_gate else None,
         },
         "hands": hands,
         "pair_diagnostics": pair_diagnostics,
+        "image_pair_diagnostics": image_pairs,
         "left_right_wrist_debug": wrist_debug,
         "checked_hand_count": sum(hand["status"] == "checked" for hand in hands),
         "rejected_hand_count": sum(not hand["accepted"] for hand in hands),

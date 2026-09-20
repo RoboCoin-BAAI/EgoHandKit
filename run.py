@@ -209,6 +209,14 @@ def build_arg_parser():
     parser.add_argument('--hmr_reference_depth_tolerance_m', type=float, default=0.08)
     parser.add_argument('--hmr_duplicate_hand_gate', action='store_true',
                         help='Reject the wrong-side duplicate only with two separated, reliable frontend references')
+    parser.add_argument('--hmr_duplicate_image_gate', action='store_true',
+                        help='Detect wrong-side duplicates using output bbox IoU, HMR sensor depth and frontend image positions')
+    parser.add_argument('--hmr_duplicate_iou_min', type=float, default=0.4)
+    parser.add_argument('--hmr_duplicate_depth_max_m', type=float, default=0.06)
+    parser.add_argument('--hmr_duplicate_reference_separation', type=float, default=0.5,
+                        help='Minimum frontend wrist separation in mean hand-box diagonals')
+    parser.add_argument('--hmr_duplicate_assignment_margin', type=float, default=0.15,
+                        help='Minimum nearest-reference distance margin in mean hand-box diagonals')
     parser.add_argument('--hmr_duplicate_distance_m', type=float, default=0.06)
     parser.add_argument('--hmr_reference_separation_m', type=float, default=0.15)
     parser.add_argument('--hmr_assignment_margin_m', type=float, default=0.08)
@@ -305,8 +313,14 @@ def validate_cli_args(parser, args):
             parser.error('--hmr_partial_hand_recovery requires canonical frontend and --mint_depth_sensor_anchor')
     if args.hmr_stable_wrist_anchor and not args.hmr_partial_hand_recovery:
         parser.error('--hmr_stable_wrist_anchor requires --hmr_partial_hand_recovery')
-    if (args.hmr_primary_policy or args.hmr_duplicate_hand_gate) and not args.mint_3d_consistency_gate:
+    if (args.hmr_primary_policy or args.hmr_duplicate_hand_gate or args.hmr_duplicate_image_gate) and not args.mint_3d_consistency_gate:
         parser.error('HMR selection policies require --mint_3d_consistency_gate')
+    from hmr_backends.utils.hand_identity import DuplicateImageConfig
+    try:
+        DuplicateImageConfig(args.hmr_duplicate_iou_min, args.hmr_duplicate_depth_max_m,
+                             args.hmr_duplicate_reference_separation, args.hmr_duplicate_assignment_margin)
+    except ValueError as exc:
+        parser.error(str(exc))
     if args.temporal_smoother and args.final_joints_smoother:
         parser.error('Choose HMR-only or final selected-hand smoothing, not both')
     limits = [args.hmr_severe_wrist_distance_m, args.hmr_severe_vector_angle_deg,

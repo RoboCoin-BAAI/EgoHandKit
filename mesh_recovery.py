@@ -499,6 +499,7 @@ def _recover_partial_outputs(raw_outputs, cleaned_data, args, out_dir,
 # ---------------------------------------------------------------------------
 
 def _consistency_options(args):
+    from hmr_backends.utils.hand_identity import DuplicateImageConfig
     return dict(
         wrist_distance_max_m=args.mint_wrist_distance_max_m,
         wrist_vector_angle_max_deg=args.mint_wrist_vector_angle_max_deg,
@@ -513,6 +514,12 @@ def _consistency_options(args):
         duplicate_distance_m=getattr(args, 'hmr_duplicate_distance_m', 0.06),
         reference_separation_m=getattr(args, 'hmr_reference_separation_m', 0.15),
         assignment_margin_m=getattr(args, 'hmr_assignment_margin_m', 0.08),
+        duplicate_image_gate=getattr(args, 'hmr_duplicate_image_gate', False),
+        duplicate_image_config=DuplicateImageConfig(
+            iou_min=getattr(args, 'hmr_duplicate_iou_min', 0.4),
+            depth_max_m=getattr(args, 'hmr_duplicate_depth_max_m', 0.06),
+            reference_separation=getattr(args, 'hmr_duplicate_reference_separation', 0.5),
+            assignment_margin=getattr(args, 'hmr_duplicate_assignment_margin', 0.15)),
     )
 
 

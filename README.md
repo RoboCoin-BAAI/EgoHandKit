@@ -170,6 +170,9 @@ python run.py --input test_data/images/disk --backend hawor --force_detect
 | `--hmr_reference_depth_tolerance_m` | `0.08` | Maximum spread of at least three MINT MCP-derived wrist depths and their disagreement with measured wrist depth |
 | `--hmr_stable_wrist_anchor` | disabled | Partial recovery preserves the HMR wrist image ray, prioritizes visible MCP sensor depth and borrows only MINT Z; production enabled |
 | `--hmr_duplicate_hand_gate` | disabled | Remove wrong-side duplicate with reliable separated MINT references; otherwise pair checks are diagnostic |
+| `--hmr_duplicate_image_gate` | disabled | Detect duplicates using HMR output boxes, independent HMR wrist depths and frontend image positions; production enabled, independent of MINT depth trust |
+| `--hmr_duplicate_iou_min` / `--hmr_duplicate_depth_max_m` | `0.4` / `0.06` | Minimum HMR output bbox IoU and maximum HMR wrist-depth difference in metres |
+| `--hmr_duplicate_reference_separation` / `--hmr_duplicate_assignment_margin` | `0.5` / `0.15` | Reference wrist separation and assignment margin, normalized by mean frontend hand-box diagonal |
 | `--hmr_duplicate_distance_m` / `--hmr_reference_separation_m` / `--hmr_assignment_margin_m` | `0.06` / `0.15` / `0.08` | HMR overlap, minimum frontend separation, and nearest-reference assignment margin, in metres |
 | `--mint_wrist_distance_max_m` | `0.08` | Maximum MINT/HMR wrist distance |
 | `--mint_wrist_vector_angle_max_deg` | `40` | Maximum wrist-to-palm vector angle |

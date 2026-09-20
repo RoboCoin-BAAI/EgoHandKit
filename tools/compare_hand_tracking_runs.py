@@ -46,6 +46,7 @@ def summarize(root, intrinsics):
                                               for h in hands)),
             'rendered_hands': sum(h['rendered'] for h in fit['hands']),
             'duplicate_candidates': sum(p['duplicate_candidate'] for p in gate.get('pair_diagnostics', [])),
+            'image_duplicate_candidates': sum(p['duplicate_candidate'] for p in gate.get('image_pair_diagnostics', [])),
             'wrist_step_p95_px': float(np.percentile(steps, 95)) if steps else None,
             'wrist_steps_over_50px': sum(s > 50 for s in steps),
             'reported_windows': samples}

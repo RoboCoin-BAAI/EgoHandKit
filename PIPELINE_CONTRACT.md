@@ -10,7 +10,8 @@ The downstream stages are frontend-independent:
 
 ```text
 frontend -> canonical observations -> depth gate -> motion gate -> backend
-         -> MINT 3D consistency gate -> endpoint wrist gate
+         -> optional image/depth identity check + MINT 3D consistency gate
+         -> endpoint wrist gate
          -> optional HMR temporal smoother -> canonical results
          -> HMR/MINT selection -> optional final joint smoother -> Parquet export
 ```
@@ -55,7 +56,53 @@ match < 15cm). The correctly labelled HMR is retained and MINT fills the other
 side. True frontend hand overlap does not meet these conditions. Swapped-label
 and separation differences alone remain diagnostic; no mirrored MANO result is
 silently relabelled. Automatic duplicate rejection is opt-in, not enabled by the
-production wrapper until real duplicate examples are validated.
+production wrapper. This older 3D-only duplicate check remains available for
+compatibility; the production image/depth check below is separate.
+
+### Image/Depth Identity Check
+
+`--hmr_duplicate_image_gate` is a separate switch within the consistency stage,
+enabled by the production wrapper. It computes pair identity evidence before
+single-hand severe-error selection and applies a veto to the wrong side before
+endpoint gating or smoothing. It does not change sensor anchoring, the existing
+1m depth veto, motion gating, assets, or the canonical contract.
+
+Frontend image-position support is evaluated separately from metric-depth
+support. It requires confidence >= 0.5 and valid projected wrist and MCP joints
+0/5/9/17 with a nondegenerate output-joint bbox. It does not require MINT sensor
+depth to be available or consistent. This remains a heuristic, not ground truth.
+
+A duplicate candidate requires all of:
+
+- Exactly one backend output for each anatomical side in that frame.
+- Canonical and backend side labels agree with their output slots; disagreement
+  is diagnostic-only because fallback export would otherwise target another side.
+- HMR projected-joint bbox IoU >= 0.4. Input crop boxes are not used.
+- Independent HMR sensor wrist depths differ by <= 0.06m. Visible HMR MCP sensor
+  recovery is allowed; MINT-borrowed or uncalibrated depths are not evidence.
+- Frontend wrists are separated by > 0.5 mean frontend hand-box diagonals.
+- Both HMR wrists are nearer the same frontend wrist, each by a > 0.15 diagonal
+  margin over the other wrist, and each within half the frontend separation of
+  its matched wrist.
+
+Only the HMR side contradicting that assignment is vetoed, and only when its
+canonical frontend has valid positive 3D fallback geometry. The other side is
+not rejected by this pair rule. Normal hand overlap, uncertain assignments,
+missing evidence, ambiguous same-side tracks and pure label swaps do not trigger
+this veto. Labels are never exchanged on already mirrored MANO predictions.
+The existing single-hand and endpoint checks still apply independently.
+
+The IoU, depth, separation and assignment thresholds are independently
+configurable via `--hmr_duplicate_iou_min`, `--hmr_duplicate_depth_max_m`,
+`--hmr_duplicate_reference_separation`, and `--hmr_duplicate_assignment_margin`.
+`image_pair_diagnostics` in `mint_3d_consistency.json` records boxes' IoU,
+depth difference, normalized assignment distances, reference-position quality,
+candidate status, and rejected side. Each hand's backend metadata records
+`position_reference_quality` separately from the existing depth-based
+`reference_quality`. Rejection reason is `duplicate_hand_image_depth`.
+The single-hand severe-error policy, final per-side fallback selection and
+UKF/RTS smoother are unchanged. No frame-specific exceptions or new spatial
+outlier filters are introduced.
 
 All selection occurs before the existing final UKF/RTS joint smoother. Source
 changes alone do not split a track; missing frames, identity/fragment changes,

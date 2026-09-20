@@ -181,6 +181,7 @@ python run.py \
     --motion_gate \
     --mint_3d_consistency_gate \
     --hmr_primary_policy \
+    --hmr_duplicate_image_gate \
     --hmr_partial_hand_recovery \
     --hmr_stable_wrist_anchor \
     --endpoint_wrist_gate \
