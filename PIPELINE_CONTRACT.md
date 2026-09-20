@@ -18,6 +18,13 @@ Depth and motion gates preserve canonical frames and split fragments when they
 reject an observation. YOLO checking is diagnostic-only and has
 `decision_effect: none`.
 
+For production MINT runs, `--mint_depth_sensor_anchor` samples registered
+dataset depth at the projected MINT wrist. A valid sample becomes the wrist's
+absolute depth anchor; disagreement with MINT's original absolute Z is kept as
+diagnostic data and does not reject the observation. Only a missing/invalid
+sensor wrist depth rejects it. The older `--mint_depth_wrist_only` comparison
+mode remains available for compatibility.
+
 The optional MINT 3D consistency gate runs after backend inference. When a
 canonical hand carries `meta.joints_3d_camera`, it compares camera-space wrist
 position, wrist-to-palm direction and wrist-to-middle-MCP scale against the HMR

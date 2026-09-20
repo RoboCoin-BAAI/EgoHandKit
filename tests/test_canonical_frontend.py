@@ -149,6 +149,15 @@ def test_canonical_cli_argument_rules():
             "--input", "x", "--frontend", "canonical", "--observations", "x.pkl",
             "--mint_predictions", "mint.npz",
         ]))
+    with pytest.raises(SystemExit):
+        run.validate_cli_args(parser, parser.parse_args([
+            "--input", "x", "--mint_depth_sensor_anchor", "--depth_dir", "depth",
+        ]))
+    with pytest.raises(SystemExit):
+        run.validate_cli_args(parser, parser.parse_args([
+            "--input", "x", "--depth_gate", "--depth_dir", "depth",
+            "--mint_depth_wrist_only", "--mint_depth_sensor_anchor",
+        ]))
 
 
 def test_downstream_stages_accept_non_mint_source_frontend(tmp_path, monkeypatch):

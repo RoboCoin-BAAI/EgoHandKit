@@ -171,6 +171,7 @@ def apply_depth_gate(
     unit_scale: float = 0.001,
     wrist_only: bool = False,
     wrist_threshold_m: float = 0.08,
+    sensor_anchor: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Reject depth outliers and restart fragments after invalid observations."""
     if not (0 < min_depth_m < max_depth_m):
@@ -228,16 +229,21 @@ def apply_depth_gate(
                 float(np.median(hand_state["history"]))
                 if hand_state["history"] and not wrist_only else None
             )
+            depth_difference_m = (
+                abs(mint_wrist_depth_m - depth_m)
+                if mint_wrist_depth_m is not None and depth_m is not None else None
+            )
             reasons = []
             not_evaluated_reason = (
                 "missing_mint_wrist_depth"
-                if wrist_only and mint_wrist_depth_m is None else None
+                if wrist_only and not sensor_anchor and mint_wrist_depth_m is None else None
             )
             if not_evaluated_reason is not None:
                 pass
             elif depth_m is None:
                 reasons.append("no_valid_depth")
-            elif wrist_only and abs(mint_wrist_depth_m - depth_m) >= wrist_threshold_m:
+            elif (wrist_only and not sensor_anchor
+                  and abs(mint_wrist_depth_m - depth_m) >= wrist_threshold_m):
                 reasons.append("wrist_depth_mismatch")
             elif not wrist_only and (depth_m < min_depth_m or depth_m > max_depth_m):
                 reasons.append("absolute_depth_limit")
@@ -256,7 +262,12 @@ def apply_depth_gate(
                 meta.update({"depth_gate": "pass", "depth_m": depth_m, "depth_reference_m": reference})
                 if wrist_only and not_evaluated_reason is None:
                     meta.update({"depth_joint_used": "wrist", "mint_wrist_depth_m": mint_wrist_depth_m,
-                                 "depth_difference_m": abs(mint_wrist_depth_m - depth_m)})
+                                 "sensor_wrist_depth_m": depth_m,
+                                 "depth_difference_m": depth_difference_m,
+                                 "depth_gate_mode": (
+                                     "sensor_wrist_anchor" if sensor_anchor
+                                     else "mint_sensor_comparison"
+                                 )})
                 elif wrist_only:
                     meta.update({"depth_joint_used": "wrist",
                                  "depth_gate_not_evaluated": not_evaluated_reason})
@@ -276,6 +287,12 @@ def apply_depth_gate(
                     "reasons": reasons, "fragment_id": int(hand_state["fragment"]),
                     "depth_joint_used": "wrist" if wrist_only else "bbox",
                     "mint_wrist_depth_m": mint_wrist_depth_m,
+                    "sensor_wrist_depth_m": depth_m,
+                    "depth_difference_m": depth_difference_m,
+                    "depth_gate_mode": (
+                        "sensor_wrist_anchor" if sensor_anchor and wrist_only
+                        else "mint_sensor_comparison" if wrist_only else "bbox"
+                    ),
                     "not_evaluated_reason": not_evaluated_reason,
                 }
                 continue
@@ -284,6 +301,12 @@ def apply_depth_gate(
                 "reasons": [], "fragment_id": int(hand_state["fragment"]),
                 "depth_joint_used": "wrist" if wrist_only else "bbox",
                 "mint_wrist_depth_m": mint_wrist_depth_m,
+                "sensor_wrist_depth_m": depth_m,
+                "depth_difference_m": depth_difference_m,
+                "depth_gate_mode": (
+                    "sensor_wrist_anchor" if sensor_anchor and wrist_only
+                    else "mint_sensor_comparison" if wrist_only else "bbox"
+                ),
                 "not_evaluated_reason": not_evaluated_reason,
             }
         output.append({**frame, "hands": kept, "depth_gate": frame_diag["hands"]})
@@ -294,6 +317,11 @@ def apply_depth_gate(
         "max_ratio": max_ratio, "min_ratio": min_ratio, "history_size": history_size,
         "max_bad_frames": max_bad_frames, "unit_scale": unit_scale,
         "wrist_only": bool(wrist_only), "wrist_threshold_m": wrist_threshold_m,
+        "sensor_anchor": bool(sensor_anchor),
+        "depth_gate_mode": (
+            "sensor_wrist_anchor" if sensor_anchor and wrist_only
+            else "mint_sensor_comparison" if wrist_only else "bbox"
+        ),
         "depth_joint_used": "wrist" if wrist_only else "bbox", "frames": diagnostics,
         "rejected_observations": sum(sum(not item["valid"] for item in row["hands"].values()) for row in diagnostics),
     }

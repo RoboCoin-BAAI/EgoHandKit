@@ -169,6 +169,8 @@ def build_arg_parser():
                         help='Consecutive bad-frame budget recorded by the gate; any bad frame starts a new fragment')
     parser.add_argument('--mint_depth_wrist_only', action='store_true', default=False,
                         help='Compare only MINT joint-0 wrist depth with sensor depth')
+    parser.add_argument('--mint_depth_sensor_anchor', action='store_true', default=False,
+                        help='Use sensor depth at the projected MINT wrist; reject only missing sensor depth')
     parser.add_argument('--mint_depth_wrist_threshold_m', type=float, default=0.08,
                         help='Maximum absolute MINT/sensor wrist-depth difference in metres')
     parser.add_argument('--motion_gate', action='store_true', default=False,
@@ -264,6 +266,10 @@ def validate_cli_args(parser, args):
         parser.error('--endpoint_wrist_max_deg must be positive')
     if args.depth_gate and not args.depth_dir:
         parser.error('--depth_gate requires --depth_dir')
+    if (args.mint_depth_wrist_only or args.mint_depth_sensor_anchor) and not args.depth_gate:
+        parser.error('--mint_depth_wrist_only and --mint_depth_sensor_anchor require --depth_gate')
+    if args.mint_depth_wrist_only and args.mint_depth_sensor_anchor:
+        parser.error('--mint_depth_wrist_only and --mint_depth_sensor_anchor are mutually exclusive')
     if (args.mint_3d_consistency_gate or args.hand_tracking_parquet) and not args.depth_dir:
         parser.error('--mint_3d_consistency_gate and --hand_tracking_parquet require --depth_dir')
     if args.mint_depth_wrist_threshold_m <= 0:
@@ -467,8 +473,9 @@ def main():
                 max_depth_m=args.depth_max_m, max_ratio=args.depth_max_ratio,
                 min_ratio=args.depth_min_ratio, history_size=args.depth_history,
                 max_bad_frames=args.depth_max_bad_frames,
-                wrist_only=args.mint_depth_wrist_only,
-                wrist_threshold_m=args.mint_depth_wrist_threshold_m)
+                wrist_only=(args.mint_depth_wrist_only or args.mint_depth_sensor_anchor),
+                wrist_threshold_m=args.mint_depth_wrist_threshold_m,
+                sensor_anchor=args.mint_depth_sensor_anchor)
             pipeline_sequence = {**pipeline_sequence, "frames": gated_frames}
             validate_observation_sequence(pipeline_sequence)
             depth_stage = artifacts.stage_dir("10_depth_gate")

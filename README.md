@@ -161,6 +161,7 @@ python run.py --input test_data/images/disk --backend hawor --force_detect
 | `--motion_gate` | disabled | Apply the image-space motion veto before HMR |
 | `--yolo_check` | disabled | Deprecated backward-compatible YOLO diagnostic; never validates hand presence or changes HMR input |
 | `--mint_depth_wrist_only` | disabled | Make the depth gate compare MINT joint-0 depth only with sensor depth |
+| `--mint_depth_sensor_anchor` | disabled | Use dataset depth at the projected MINT wrist as its absolute depth; reject only when sensor depth is unavailable |
 | `--mint_depth_wrist_threshold_m` | `0.08` | Maximum absolute MINT/sensor wrist-depth difference |
 | `--mint_3d_consistency_gate` | disabled | Reject HMR samples inconsistent with available MINT camera-space joints before smoothing |
 | `--mint_wrist_distance_max_m` | `0.08` | Maximum MINT/HMR wrist distance |

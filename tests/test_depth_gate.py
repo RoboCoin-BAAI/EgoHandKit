@@ -99,6 +99,36 @@ def test_wrist_only_depth_rejects_sensor_disagreement(tmp_path):
     assert report["frames"][0]["hands"]["right"]["reasons"] == ["wrist_depth_mismatch"]
 
 
+def test_sensor_anchor_mode_keeps_mint_despite_original_depth_disagreement(tmp_path):
+    depth_root = _write_depth_sequence(tmp_path / "depth", [500])
+    images = _images(tmp_path, 1)
+    frames = _frames(1)
+    frames[0]["hands"][0]["keypoints_2d"][0] = [20, 20, 1]
+    joints = np.zeros((21, 3), dtype=np.float32)
+    joints[:, 2] = 0.9
+    frames[0]["hands"][0]["meta"].update({
+        "joints_3d_camera": joints,
+        "camera_frame": "opencv_x_right_y_down_z_forward",
+        "joint_order": "openpose21",
+    })
+
+    gated, report = apply_depth_gate(
+        frames, images, depth_root, wrist_only=True,
+        wrist_threshold_m=0.08, sensor_anchor=True,
+    )
+
+    assert len(gated[0]["hands"]) == 1
+    meta = gated[0]["hands"][0]["meta"]
+    assert meta["sensor_wrist_depth_m"] == np.float32(0.5)
+    assert meta["mint_wrist_depth_m"] == np.float32(0.9)
+    assert np.isclose(meta["depth_difference_m"], 0.4)
+    assert meta["depth_gate_mode"] == "sensor_wrist_anchor"
+    assert np.isclose(
+        report["frames"][0]["hands"]["right"]["depth_difference_m"], 0.4
+    )
+    assert report["rejected_observations"] == 0
+
+
 def test_wrist_only_depth_keeps_observation_without_mint_reference(tmp_path):
     depth_root = _write_depth_sequence(tmp_path / "depth", [500])
     images = _images(tmp_path, 1)

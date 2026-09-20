@@ -176,7 +176,7 @@ python run.py \
     --depth_gate \
     --depth_dir "$DEPTH_DIR" \
     --depth_max_m 1.0 \
-    --mint_depth_wrist_only \
+    --mint_depth_sensor_anchor \
     --motion_gate \
     --mint_3d_consistency_gate \
     --endpoint_wrist_gate \
