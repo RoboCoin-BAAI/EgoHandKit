@@ -102,6 +102,15 @@ def convert_hmr_to_camera_joints(
     if getattr(output, "hand_side", None) == "left":
         joints[:, 0] *= -1
     metadata = getattr(output, "raw_backend_meta", {})
+    recovery = metadata.get('partial_hand_recovery')
+    if recovery is not None:
+        if recovery.get('status') != 'recovered':
+            return None
+        wrist = np.asarray(recovery.get('wrist_camera'), dtype=np.float64)
+        if wrist.shape != (3,) or not np.isfinite(wrist).all():
+            return None
+        result = joints - joints[:1] + wrist
+        return result if np.isfinite(result).all() and np.all(result[:, 2] > 0) else None
     anchor = metadata.get("depth_anchor", {}) if isinstance(metadata, Mapping) else {}
     if wrist_depth_m is None:
         wrist_depth_m = anchor.get("hmr_wrist_depth_m")
@@ -220,6 +229,15 @@ def _diagnostic(output: Any, *, wrist_distance_max_m: float,
         "reject_reasons": [],
     }
     metadata = getattr(output, "raw_backend_meta", {})
+    recovery = metadata.get('partial_hand_recovery')
+    if recovery is not None:
+        accepted = convert_hmr_to_camera_joints(output) is not None
+        return {**base, 'accepted': accepted,
+                'status': 'partial_hand_assisted' if accepted else 'missing_hmr_geometry',
+                'reject_reason': None if accepted else 'missing_hmr_geometry',
+                'reject_reasons': [] if accepted else ['missing_hmr_geometry'],
+                'anchor_source': recovery.get('source'),
+                'not_evaluated_reason': 'assisted_wrist_not_independent'}
     anchor = metadata.get("depth_anchor", {})
     base.update({
         "mint_wrist_sensor_depth_m": anchor.get("mint_wrist_depth_m"),

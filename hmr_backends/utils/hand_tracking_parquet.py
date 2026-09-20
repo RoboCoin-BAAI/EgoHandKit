@@ -57,7 +57,11 @@ def _hmr_hands(result: Mapping[str, Any]) -> dict[str, tuple[np.ndarray, float |
             continue
         confidence = metadata.get("confidence")
         confidence = float(confidence) if confidence is not None else None
-        hands[side] = (joints, confidence, str(metadata.get("backend", "hmr")))
+        source = str(metadata.get("backend", "hmr"))
+        recovery = metadata.get('partial_hand_recovery', {})
+        if recovery.get('status') == 'recovered':
+            source = f"{source}_{recovery['source']}"
+        hands[side] = (joints, confidence, source)
     return hands
 
 

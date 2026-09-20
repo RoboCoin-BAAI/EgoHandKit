@@ -31,6 +31,27 @@ sent to HMR, and its original frontend 3D is retained in Parquet with source
 `mint_frontend_fallback`. The older `--mint_depth_wrist_only` comparison mode
 remains available for compatibility.
 
+`--hmr_partial_hand_recovery` optionally overrides the frontend-only bypass
+when at least `--hmr_partial_min_visible_joints` canonical joints are in view
+and the crop intersects the image. The original observation is not modified.
+Insufficiently visible hands still use the previous frontend fallback.
+After HMR inference, this mode retains mirrored, root-relative HMR geometry
+and chooses an absolute wrist anchor in this order: HMR sensor wrist, MINT
+sensor wrist, consistent visible HMR MCP depth estimates, original MINT wrist.
+MCP estimation requires at least three samples whose inferred wrist depths
+span at most `--hmr_partial_depth_spread_max_m`. Original MINT wrist anchoring
+is explicitly uncalibrated. Sensor-backed anchors beyond `--depth_max_m`
+exclude both the HMR output and its MINT fallback; the frame is retained.
+Assisted results bypass the independent 3D consistency veto, since their
+position may depend on MINT and the missing wrist depth cannot support that
+comparison. Normal fully anchored hands keep the original thresholds.
+Endpoint gating remains enabled and inference/geometry failure still falls
+back to MINT. Final smoothing and Parquet mesh rendering are unchanged.
+`stages/42_partial_hand_recovery/report.json` and per-output backend metadata
+record the anchor source and depth quality. Parquet sources distinguish
+`hamer_mint_frontend_wrist`, `hamer_mint_sensor_wrist`,
+`hamer_visible_mcp_sensor`, and `hamer_hmr_sensor_wrist` from full MINT fallback.
+
 The optional MINT 3D consistency gate runs after backend inference. When a
 canonical hand carries `meta.joints_3d_camera`, it compares camera-space wrist
 position, wrist-to-palm direction and wrist-to-middle-MCP scale against the HMR

@@ -179,6 +179,7 @@ python run.py \
     --mint_depth_sensor_anchor \
     --motion_gate \
     --mint_3d_consistency_gate \
+    --hmr_partial_hand_recovery \
     --endpoint_wrist_gate \
     --endpoint_wrist_max_deg 100 \
     --final_joints_smoother \

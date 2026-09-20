@@ -201,6 +201,10 @@ def build_arg_parser():
                         help='Optional penalty for high-cost continued track assignments')
     parser.add_argument('--mint_3d_consistency_gate', action='store_true', default=False,
                         help='Reject HMR outputs inconsistent with an available MINT camera-space 3D prior')
+    parser.add_argument('--hmr_partial_hand_recovery', action='store_true', default=False,
+                        help='Attempt HMR for visible partial hands; use sensor/MINT wrist anchors while retaining HMR shape')
+    parser.add_argument('--hmr_partial_min_visible_joints', type=int, default=4)
+    parser.add_argument('--hmr_partial_depth_spread_max_m', type=float, default=0.08)
     parser.add_argument('--mint_wrist_distance_max_m', type=float, default=0.08,
                         help='Maximum MINT/HMR wrist distance in metres')
     parser.add_argument('--mint_wrist_vector_angle_max_deg', type=float, default=40.0,
@@ -282,6 +286,14 @@ def validate_cli_args(parser, args):
         parser.error('--mint_depth_wrist_only and --mint_depth_sensor_anchor are mutually exclusive')
     if args.render_hand_tracking_parquet or args.final_joints_smoother:
         args.hand_tracking_parquet = True
+    if args.hmr_partial_hand_recovery:
+        args.hand_tracking_parquet = True
+        if args.frontend != 'canonical' or not args.mint_depth_sensor_anchor:
+            parser.error('--hmr_partial_hand_recovery requires canonical frontend and --mint_depth_sensor_anchor')
+    if not 1 <= args.hmr_partial_min_visible_joints <= 21:
+        parser.error('--hmr_partial_min_visible_joints must lie in [1,21]')
+    if not 0 < args.hmr_partial_depth_spread_max_m < float('inf'):
+        parser.error('--hmr_partial_depth_spread_max_m must be finite and positive')
     if not 0 < args.final_smoother_max_jump_m < float('inf'):
         parser.error('--final_smoother_max_jump_m must be finite and positive')
     if args.parquet_mano_fit_steps < 1 or not 0 < args.parquet_mano_fit_max_rmse_m < float('inf'):
@@ -577,6 +589,8 @@ def main():
         {"name": "motion_gate", "enabled": bool(args.motion_gate), "artifact": "stages/20_motion_gate/observations.pkl" if args.motion_gate else None},
         {"name": "yolo_check", "enabled": bool(args.yolo_check), "artifact": "stages/30_yolo_check/report.json" if args.yolo_check else None},
         {"name": "backend_raw", "enabled": True, "artifact": "stages/40_backend_raw/outputs.pkl"},
+        {"name": "partial_hand_recovery", "enabled": bool(args.hmr_partial_hand_recovery),
+         "artifact": "stages/42_partial_hand_recovery/report.json" if args.hmr_partial_hand_recovery else None},
         {"name": "mint_3d_consistency_gate", "enabled": bool(args.mint_3d_consistency_gate),
          "artifact": "stages/45_mint_3d_consistency/mint_3d_consistency.json" if args.mint_3d_consistency_gate else None},
         {"name": "endpoint_wrist_gate", "enabled": bool(args.endpoint_wrist_gate), "artifact": "stages/50_endpoint_wrist_gate/outputs.pkl" if args.endpoint_wrist_gate else None},

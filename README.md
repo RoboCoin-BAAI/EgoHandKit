@@ -171,6 +171,9 @@ python run.py --input test_data/images/disk --backend hawor --force_detect
 | `--endpoint_wrist_gate` | disabled | Reject extreme raw wrist rotations only at track-fragment endpoints |
 | `--temporal_smoother` | disabled | Smooth camera-space MANO output after the endpoint gate |
 | `--final_joints_smoother` | disabled | Smooth selected HMR/MINT camera joints before Parquet export; production script uses this instead of HMR-only smoothing |
+| `--hmr_partial_hand_recovery` | disabled | Attempt HMR on visible partial hands and retain its shape with sensor/MINT wrist assistance; enabled in the production script |
+| `--hmr_partial_min_visible_joints` | `4` | Minimum in-frame canonical joints required to attempt HMR on frontend fallback hands |
+| `--hmr_partial_depth_spread_max_m` | `0.08` | Maximum spread of wrist-depth estimates from at least three visible MCP samples |
 | `--final_smoother_max_jump_m` | `0.2` | Restart final smoothing when any joint jumps farther between frames; does not delete hands |
 | `--gpu` | `0` | Physical CUDA GPU index. Sets both `CUDA_VISIBLE_DEVICES` and `EGL_DEVICE_ID` before importing torch, then the process uses remapped `cuda:0`. |
 | `--fps` | `15` | Output FPS for image-folder input |

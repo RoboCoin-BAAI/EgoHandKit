@@ -27,6 +27,7 @@ from hmr_backends.utils.mint_3d_consistency import (
 from bbox_utils import create_video_from_images
 from pipeline_artifacts import ArtifactStore, serialize_backend_outputs
 from observation_frontend.depth_gate import infer_camera_side
+from hmr_backends.utils.partial_hand_recovery import visible_hand, attach_partial_hand_anchors
 
 
 # ---------------------------------------------------------------------------
@@ -59,7 +60,10 @@ def _collect_observation_inputs(frames, args, backend_name):
     for frame in frames:
         for observation in frame['hands']:
             if observation.get('meta', {}).get('force_frontend_fallback'):
-                continue
+                if (not getattr(args, 'hmr_partial_hand_recovery', False)
+                        or not visible_hand(observation, image.shape[:2],
+                                            getattr(args, 'hmr_partial_min_visible_joints', 4))):
+                    continue
             # ViTPose handedness is retained in metadata, but HaWoR needs a
             # stable crop flip for an entire physical track.  The frontend
             # supplies a track-level side that is robust to transient flips.
@@ -460,6 +464,35 @@ def _export_hand_tracking_if_enabled(cleaned_data, results, args, out_dir):
     )
 
 
+def _recover_partial_outputs(raw_outputs, cleaned_data, args, out_dir,
+                             stage='42_partial_hand_recovery'):
+    if not getattr(args, 'hmr_partial_hand_recovery', False):
+        return raw_outputs, cleaned_data
+    report = attach_partial_hand_anchors(
+        raw_outputs, args.depth_dir, len(cleaned_data),
+        depth_spread_max_m=args.hmr_partial_depth_spread_max_m,
+        max_depth_m=args.depth_max_m if getattr(args, 'depth_gate', False) else None,
+    )
+    excluded = {(o.frame_idx, o.raw_backend_meta.get('physical_track_id'),
+                 o.raw_backend_meta.get('handedness', o.hand_side)) for o in raw_outputs
+                if o.raw_backend_meta.get('partial_hand_recovery', {}).get('status') == 'depth_rejected'}
+    # A measured/estimated sensor wrist beyond the range must not reappear as
+    # a MINT fallback at export. Keep the frame itself in the timeline.
+    frames = [{**frame, 'hands': [h for h in frame.get('hands', [])
+               if (frame['frame_idx'], h.get('physical_track_id'), h['handedness']) not in excluded]}
+              for frame in cleaned_data]
+    kept = [o for o in raw_outputs
+            if o.raw_backend_meta.get('partial_hand_recovery', {}).get('status') != 'depth_rejected']
+    for output in kept:
+        output.camera_joints_3d = convert_hmr_to_camera_joints(output)
+    artifacts = ArtifactStore(out_dir)
+    artifacts.write_json(artifacts.stage_dir(stage) / 'report.json', {
+        'enabled': True, 'hands': report, 'depth_rejected_hands': len(excluded),
+        'recovered_hands': sum(r['status'] == 'recovered' for r in report),
+    })
+    return kept, frames
+
+
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
@@ -522,6 +555,7 @@ def run_mesh_recovery(cleaned_data, backend_bundle, renderer, args, out_dir, fps
             Path(out_dir).mkdir(parents=True, exist_ok=True)
             artifacts = ArtifactStore(out_dir)
             artifacts.write_json(artifacts.stage_dir("50_endpoint_wrist_gate") / "report.json", pose_report)
+        _, cleaned_data = _recover_partial_outputs([], cleaned_data, args, out_dir)
         results = _assemble_results([], cleaned_data)
         _export_hand_tracking_if_enabled(cleaned_data, results, args, out_dir)
         _render_results([], cleaned_data, renderer, args, out_dir, fps, None, backend_bundle)
@@ -533,12 +567,13 @@ def run_mesh_recovery(cleaned_data, backend_bundle, renderer, args, out_dir, fps
             or getattr(args, 'hand_tracking_parquet', False)):
         attach_depth_anchors(
             raw_outputs, args.depth_dir, len(cleaned_data),
-            expected_reference_camera=infer_camera_side(getattr(args, "input", None)),
+            expected_reference_camera=infer_camera_side(getattr(args, 'input', None)),
         )
     artifacts = ArtifactStore(out_dir)
     artifacts.write_pickle(artifacts.stage_dir("40_backend_raw") / "outputs.pkl", serialize_backend_outputs(raw_outputs))
     artifacts.write_json(artifacts.stage_dir("40_backend_raw") / "summary.json", {
         "schema_version": "egohand.backend_outputs.v1", "count": len(raw_outputs), "stage": "pre_gate_pre_smoother"})
+    raw_outputs, cleaned_data = _recover_partial_outputs(raw_outputs, cleaned_data, args, out_dir)
     if getattr(args, 'mint_3d_consistency_gate', False):
         checked_outputs = raw_outputs
         raw_outputs, consistency_report = apply_mint_3d_consistency_gate(
@@ -577,8 +612,10 @@ def run_mesh_recovery(cleaned_data, backend_bundle, renderer, args, out_dir, fps
             _reproject_smoothed_outputs(raw_outputs, backend_bundle)
             attach_depth_anchors(
                 raw_outputs, args.depth_dir, len(cleaned_data),
-                expected_reference_camera=infer_camera_side(getattr(args, "input", None)),
+                expected_reference_camera=infer_camera_side(getattr(args, 'input', None)),
             )
+            raw_outputs, cleaned_data = _recover_partial_outputs(
+                raw_outputs, cleaned_data, args, out_dir, stage='62_partial_hand_recovery')
         artifacts.write_pickle(artifacts.stage_dir("60_smoother") / "outputs.pkl", serialize_backend_outputs(raw_outputs))
         artifacts.write_json(artifacts.stage_dir("60_smoother") / "summary.json", {
             "schema_version": "egohand.smoother.v1", "q": args.smoother_q,
