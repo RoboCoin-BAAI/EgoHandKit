@@ -14,6 +14,7 @@ from hmr_backends.utils.mint_3d_consistency import convert_mint_to_camera_joints
 
 
 JOINTS_TYPE = pa.list_(pa.list_(pa.float32(), 3), 21)
+MISSING_JOINTS = np.full((21, 3), np.nan, dtype=np.float32)
 HAND_TRACKING_SCHEMA = pa.schema([
     pa.field("frame_idx", pa.int64(), nullable=False),
     pa.field("timestamp_ns", pa.int64()),
@@ -86,7 +87,12 @@ def export_hand_tracking_parquet(
         for side in ("left", "right"):
             value = selected.get(side)
             row[f"{side}_present"] = value is not None
-            row[f"{side}_joints_3d"] = value[0].tolist() if value is not None else None
+            # Parquet cannot encode a null fixed-size list reliably. Presence
+            # is authoritative; NaNs keep the physical shape without
+            # masquerading as valid camera coordinates.
+            row[f"{side}_joints_3d"] = (
+                value[0].tolist() if value is not None else MISSING_JOINTS.tolist()
+            )
             row[f"{side}_confidence"] = value[1] if value is not None else None
         rows.append(row)
 

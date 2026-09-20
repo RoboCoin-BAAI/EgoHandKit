@@ -25,12 +25,20 @@ def test_parquet_round_trip_and_missing_hmr_keeps_mint(tmp_path):
     left = np.arange(63, dtype=np.float32).reshape(21, 3) / 100.0
     right_mint = left + 1.0
     right_hmr = left + 2.0
-    frames = [{
-        "frame_idx": 0,
-        "img_path": "frame.jpg",
-        "timestamp_ns": 123,
-        "hands": [_observation("left", left), _observation("right", right_mint, 0.7)],
-    }]
+    frames = [
+        {
+            "frame_idx": 0,
+            "img_path": "frame.jpg",
+            "timestamp_ns": 123,
+            "hands": [_observation("left", left), _observation("right", right_mint, 0.7)],
+        },
+        {
+            "frame_idx": 1,
+            "img_path": "missing.jpg",
+            "timestamp_ns": None,
+            "hands": [],
+        },
+    ]
     results = {"frame.jpg": {
         "joints_3d": [right_hmr],
         "backend_meta": [{"handedness": "right", "confidence": 0.9}],
@@ -51,3 +59,12 @@ def test_parquet_round_trip_and_missing_hmr_keeps_mint(tmp_path):
     assert row["right_confidence"] == np.float32(0.9)
     assert row["source"] == "mixed"
     assert table.schema.field("left_joints_3d").type.list_size == 21
+
+    missing = table.to_pylist()[1]
+    assert missing["left_present"] is False
+    assert missing["right_present"] is False
+    assert np.isnan(missing["left_joints_3d"]).all()
+    assert np.isnan(missing["right_joints_3d"]).all()
+    assert missing["left_confidence"] is None
+    assert missing["right_confidence"] is None
+    assert missing["source"] == "none"
