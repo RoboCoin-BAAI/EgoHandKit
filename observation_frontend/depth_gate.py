@@ -221,9 +221,6 @@ def apply_depth_gate(
                     and 0 <= keypoints[0, 0] < image_w
                     and 0 <= keypoints[0, 1] < image_h
                 )
-                frontend_fallback = bool(
-                    sensor_anchor and wrist_projection_valid and not wrist_in_image
-                )
                 depth_m = (
                     depth_for_image_point(
                         depth_path, keypoints[0, :2], image.shape[:2], unit_scale=unit_scale
@@ -231,6 +228,7 @@ def apply_depth_gate(
                     if wrist_in_image else None
                 )
                 mint_wrist_depth_m = _mint_wrist_depth(observation)
+                frontend_fallback = bool(sensor_anchor and depth_m is None)
             else:
                 depth_m = _depth_for_bbox(
                     depth_path, observation["bbox_xyxy"], image.shape[:2], unit_scale=unit_scale
@@ -245,7 +243,8 @@ def apply_depth_gate(
             )
             reasons = []
             not_evaluated_reason = (
-                "wrist_out_of_image" if frontend_fallback
+                "wrist_out_of_image" if frontend_fallback and wrist_projection_valid and not wrist_in_image
+                else "no_valid_depth" if frontend_fallback
                 else "missing_mint_wrist_depth"
                 if wrist_only and not sensor_anchor and mint_wrist_depth_m is None
                 else None
@@ -254,6 +253,8 @@ def apply_depth_gate(
                 pass
             elif depth_m is None:
                 reasons.append("no_valid_depth")
+            elif sensor_anchor and depth_m > max_depth_m:
+                reasons.append("absolute_depth_limit")
             elif (wrist_only and not sensor_anchor
                   and abs(mint_wrist_depth_m - depth_m) >= wrist_threshold_m):
                 reasons.append("wrist_depth_mismatch")

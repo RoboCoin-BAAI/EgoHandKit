@@ -166,3 +166,27 @@ def smooth_hand_sequence(hand: np.ndarray, frame_indices: np.ndarray | None = No
     result[:, 9:99] = _mat_to_rot6d(Rotation.from_rotvec(pose.reshape(-1, 3)).as_matrix()).reshape(-1, 90)
     result[:, 99:109] = smoothed[offset:offset + 10].T
     return result.astype(source.dtype, copy=False)
+
+
+def smooth_camera_joint_sequence(joints, frame_indices, *, q=0.6, r=0.6, beta=2.0):
+    """Smooth a continuous final track as wrist plus root-relative joints."""
+    source = np.asarray(joints)
+    times = np.asarray(frame_indices, dtype=np.float64)
+    if source.shape != (len(times), 21, 3) or not np.isfinite(source).all():
+        raise ValueError('Expected finite [T,21,3] camera joints')
+    if np.any(np.diff(times) <= 0):
+        raise ValueError('frame_indices must be strictly increasing')
+    if not np.isfinite([q, r, beta]).all() or q <= 0 or r <= 0 or beta < 0:
+        raise ValueError('Invalid final joint smoother parameters')
+    if len(source) < _MIN_VALID:
+        return source.copy()
+    relative = source[:, 1:] - source[:, :1]
+    channels = np.concatenate([source[:, 0], relative.reshape(len(source), -1)], axis=1).T
+    filtered = _smooth_channels(times, channels, q=q, r=r, beta=beta).T
+    result = np.empty_like(source)
+    result[:, 0] = filtered[:, :3]
+    result[:, 1:] = filtered[:, 3:].reshape(-1, 20, 3) + result[:, :1]
+    # A numerical failure must not turn a valid exported hand into a missing one.
+    if not np.isfinite(result).all() or np.any(result[:, :, 2] <= 0):
+        raise ValueError('Final joint smoothing produced invalid camera geometry')
+    return result

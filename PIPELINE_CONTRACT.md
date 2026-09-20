@@ -11,7 +11,8 @@ The downstream stages are frontend-independent:
 ```text
 frontend -> canonical observations -> depth gate -> motion gate -> backend
          -> MINT 3D consistency gate -> endpoint wrist gate
-         -> temporal smoother -> canonical results -> Parquet export
+         -> optional HMR temporal smoother -> canonical results
+         -> HMR/MINT selection -> optional final joint smoother -> Parquet export
 ```
 
 Depth and motion gates preserve canonical frames and split fragments when they
@@ -21,9 +22,11 @@ reject an observation. YOLO checking is diagnostic-only and has
 For production MINT runs, `--mint_depth_sensor_anchor` samples registered
 dataset depth at the projected MINT wrist. A valid sample becomes the wrist's
 absolute depth anchor; disagreement with MINT's original absolute Z is kept as
-diagnostic data and does not reject the observation. Only a missing/invalid
-sensor wrist depth at an in-frame projection rejects it. When MINT predicts a
-wrist outside the image, the observation is marked `frontend_fallback`, is not
+diagnostic data and does not reject the observation. Sensor wrist depth greater
+than `--depth_max_m` rejects the observation without HMR or MINT fallback (the
+production script sets 1.0 metres; equality is accepted). When sensor depth is
+unavailable, including a wrist outside the image, the observation is marked
+`frontend_fallback`, is not
 sent to HMR, and its original frontend 3D is retained in Parquet with source
 `mint_frontend_fallback`. The older `--mint_depth_wrist_only` comparison mode
 remains available for compatibility.
@@ -35,6 +38,38 @@ result. A rejected HMR sample is removed before endpoint gating and smoothing;
 the canonical observation remains available as the Parquet fallback. Missing
 MINT geometry never rejects an HMR sample.
 
+`--render_frontend_fallback` adds orange canonical skeletons to the final video
+for hands without accepted HMR meshes. It shares the Parquet fallback validity
+and depth policy, draws the original canonical 2D projection, and never creates
+or interpolates a MANO mesh. Off-screen joints are clipped for display only.
+This remains an optional legacy visualization.
+
+The production `scripts/run_without_front.sh` instead enables
+`--render_hand_tracking_parquet`. It fits a common neutral-shape MANO mesh to
+each present hand's final Parquet joints, including MINT fallback hands. Fitting
+optimizes pose and uniform scale independently per sample, fixes the wrist,
+mirrors left hands, and never edits Parquet or bridges missing frames. Rendering
+uses the calibrated camera's fx/fy/cx/cy (scaled from depth to RGB dimensions).
+No backend mesh or original frontend hand observation is read by this renderer.
+Mesh colors match the HMR overlay: left green, right blue, regardless of source.
+This is a visualization approximation, not a new HaMeR prediction. Absent hands,
+invalid geometry and fits exceeding `--parquet_mano_fit_max_rmse_m` are not
+drawn; per-hand errors are recorded in `final/parquet_mesh_fit.json`.
+`tools/render_hand_tracking_parquet.py` can rerender an existing Parquet with
+the original image directory and depth camera calibration, without running HMR.
+
+Production uses `--final_joints_smoother` rather than `--temporal_smoother` to
+avoid smoothing HMR twice. After HMR/MINT selection it applies the existing
+UKF/RTS camera smoother to the wrist and root-relative 3D joints. Source changes
+do not break a continuous track; missing hands/frame indices and physical
+track/fragment changes do. Segments shorter than four samples remain unchanged.
+Joint jumps above `--final_smoother_max_jump_m` (0.2m) also restart the smoother,
+so an incompatible depth jump cannot drag neighboring valid hands across space.
+No missing hands are created and presence/provenance/timestamps are preserved.
+The resulting joints are written to Parquet and used by the mesh renderer;
+`final_joints_smoother.json` reports segment boundaries and displacements.
+The HMR-only smoother remains independently available for compatibility.
+
 Before that comparison, both sources are anchored independently to registered
 sensor depth at their own projected wrist pixel. Their remaining joint depths
 come from root-relative MANO geometry, and each joint's image projection is
@@ -45,8 +80,10 @@ Back-projection prefers the calibrated RGB intrinsics in
 `fast_foundation/fast_foundation_stereo_video_meta.json`; canonical/MINT
 intrinsics are only a compatibility fallback when depth calibration metadata
 is unavailable.
-An observation without a valid sensor wrist depth is not exported as metric
-3D; Parquet presence is false and its fixed-size joint array contains NaNs.
+An observation without valid sensor wrist depth is exported using original
+frontend 3D only when explicitly marked `frontend_fallback`; this is not
+sensor-calibrated depth. Otherwise Parquet presence is false and its fixed-size
+joint array contains NaNs.
 
 The endpoint wrist gate groups raw backend outputs by track, side, and fragment,
 splits on missing frame indices, and for runs of at least four frames rejects

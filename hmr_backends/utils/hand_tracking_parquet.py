@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+import json
 from typing import Any
 
 import cv2
@@ -106,16 +107,14 @@ def _mint_hands(
     return hands
 
 
-def export_hand_tracking_parquet(
+def iter_selected_hands(
     frames: Sequence[Mapping[str, Any]],
     results: Mapping[str, Mapping[str, Any]],
-    path: str | Path,
     *,
     depth_dir: str | Path | None = None,
     expected_reference_camera: str | None = None,
-) -> Path:
-    """Export accepted HMR joints, falling back to an available MINT prior."""
-    rows = []
+):
+    """Select final hands consistently for export and fallback visualization."""
     depth_paths = resolve_depth_frames(depth_dir, len(frames)) if depth_dir is not None else None
     sensor_intrinsics = (
         resolve_depth_camera_intrinsics(
@@ -137,6 +136,29 @@ def export_hand_tracking_parquet(
         mint = _mint_hands(frame, depth_path, frame_intrinsics)
         selected = dict(mint)
         selected.update(_hmr_hands(results.get(frame["img_path"], {})))
+        yield frame, selected
+
+
+def export_hand_tracking_parquet(
+    frames: Sequence[Mapping[str, Any]],
+    results: Mapping[str, Mapping[str, Any]],
+    path: str | Path,
+    *,
+    depth_dir: str | Path | None = None,
+    expected_reference_camera: str | None = None,
+    final_smoother: bool = False,
+    smoother_q: float = 0.6,
+    smoother_r: float = 0.6,
+    smoother_beta: float = 2.0,
+    smoother_max_jump_m: float = 0.2,
+) -> Path:
+    """Export accepted HMR joints, falling back to an available MINT prior."""
+    rows = []
+    segment_keys = []
+    for frame, selected in iter_selected_hands(
+        frames, results, depth_dir=depth_dir,
+        expected_reference_camera=expected_reference_camera,
+    ):
         sources = {selected[side][2] for side in ("left", "right") if side in selected}
         source = next(iter(sources)) if len(sources) == 1 else "mixed" if sources else "none"
         row: dict[str, Any] = {
@@ -155,12 +177,36 @@ def export_hand_tracking_parquet(
             )
             row[f"{side}_confidence"] = value[1] if value is not None else None
         rows.append(row)
+        keys = {}
+        for side in ('left', 'right'):
+            observation = next((h for h in frame.get('hands', []) if h.get('handedness') == side), {})
+            if not observation:
+                observation = next((h for h in results.get(frame['img_path'], {}).get('backend_meta', [])
+                                    if h.get('handedness', h.get('backend_handedness')) == side), {})
+            keys[side] = (observation.get('physical_track_id', side),
+                          observation.get('physical_track_fragment_id', 0))
+        segment_keys.append(keys)
+
+    report = None
+    if final_smoother:
+        from hmr_backends.utils.final_joint_smoother import smooth_final_rows
+        report = smooth_final_rows(rows, segment_keys, q=smoother_q, r=smoother_r,
+                                   beta=smoother_beta, max_jump_m=smoother_max_jump_m)
 
     columns = [pa.array([row[field.name] for row in rows], type=field.type) for field in HAND_TRACKING_SCHEMA]
     table = pa.Table.from_arrays(columns, schema=HAND_TRACKING_SCHEMA)
+    if report is not None:
+        table = table.replace_schema_metadata({**table.schema.metadata,
+            b'final_joints_smoother': json.dumps({
+                'q': smoother_q, 'r': smoother_r, 'beta': smoother_beta,
+                'max_jump_m': smoother_max_jump_m,
+                'smoothed_hands': report['smoothed_hands'],
+            }).encode()})
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
     pq.write_table(table, temporary)
     temporary.replace(path)
+    if report is not None:
+        path.with_name('final_joints_smoother.json').write_text(json.dumps(report, indent=2, allow_nan=False))
     return path

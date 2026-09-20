@@ -7,6 +7,10 @@ renderer/camera semantics that are already validated to align with the image.
 """
 
 
+COLOR_GREEN = (0.2, 0.8, 0.3)
+COLOR_BLUE = (0.2, 0.4, 0.9)
+
+
 class LeftHandMeshPolicy:
     def apply(self, verts, is_right, mano_params, cam_t):
         if is_right:

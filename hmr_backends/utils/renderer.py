@@ -343,6 +343,7 @@ class Renderer:
             render_res=[256, 256],
             focal_length=None,
             is_right=None,
+            camera_intrinsics=None,
         ):
 
         renderer = pyrender.OffscreenRenderer(viewport_width=render_res[0],
@@ -373,8 +374,14 @@ class Renderer:
         # camera_pose[:3, 3] = camera_translation
         camera_center = [render_res[0] / 2., render_res[1] / 2.]
         focal_length = focal_length if focal_length is not None else self.focal_length
-        camera = pyrender.IntrinsicsCamera(fx=focal_length, fy=focal_length,
-                                           cx=camera_center[0], cy=camera_center[1], zfar=1e12)
+        if camera_intrinsics is None:
+            fx, fy = focal_length, focal_length
+            cx, cy = camera_center
+        else:
+            intrinsic = np.asarray(camera_intrinsics)
+            fx, fy = intrinsic[0, 0], intrinsic[1, 1]
+            cx, cy = intrinsic[0, 2], intrinsic[1, 2]
+        camera = pyrender.IntrinsicsCamera(fx=fx, fy=fy, cx=cx, cy=cy, zfar=1e12)
 
         # Create camera node and add it to pyRender scene
         camera_node = pyrender.Node(camera=camera, matrix=camera_pose)

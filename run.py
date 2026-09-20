@@ -141,6 +141,10 @@ def build_arg_parser():
                         help='IoU threshold used by --yolo_check')
     parser.add_argument('--temporal_smoother', action='store_true', default=False,
                         help='Apply the optional camera-space MANO temporal smoother after HMR inference')
+    parser.add_argument('--final_joints_smoother', action='store_true', default=False,
+                        help='Smooth final selected HMR/MINT camera joints before Parquet export; enables export')
+    parser.add_argument('--final_smoother_max_jump_m', type=float, default=0.2,
+                        help='Restart final smoothing at larger joint jumps without deleting hands')
     parser.add_argument('--endpoint_wrist_gate', action='store_true', default=False,
                         help='Reject only raw backend segment endpoints with an extreme wrist jump')
     parser.add_argument('--endpoint_wrist_max_deg', type=float, default=100.0,
@@ -170,7 +174,7 @@ def build_arg_parser():
     parser.add_argument('--mint_depth_wrist_only', action='store_true', default=False,
                         help='Compare only MINT joint-0 wrist depth with sensor depth')
     parser.add_argument('--mint_depth_sensor_anchor', action='store_true', default=False,
-                        help='Use sensor depth at the projected MINT wrist; reject only missing sensor depth')
+                        help='Anchor to sensor wrist depth; reject beyond depth_max_m, retain frontend when depth is unavailable')
     parser.add_argument('--mint_depth_wrist_threshold_m', type=float, default=0.08,
                         help='Maximum absolute MINT/sensor wrist-depth difference in metres')
     parser.add_argument('--motion_gate', action='store_true', default=False,
@@ -213,6 +217,12 @@ def build_arg_parser():
                         help='FPS for output visualization videos (only used for image folder input; video input auto-uses native FPS)')
     parser.add_argument('--render', dest='render', action='store_true', default=True,
                         help='If set, render mesh overlay results')
+    parser.add_argument('--render_frontend_fallback', action='store_true', default=False,
+                        help='Overlay orange canonical fallback skeletons where HMR meshes are absent')
+    parser.add_argument('--render_hand_tracking_parquet', action='store_true', default=False,
+                        help='Fit and render MANO meshes using only final Parquet joints; enables Parquet export')
+    parser.add_argument('--parquet_mano_fit_steps', type=int, default=200)
+    parser.add_argument('--parquet_mano_fit_max_rmse_m', type=float, default=0.03)
     parser.add_argument('--force_detect', action='store_true', default=False,
                         help='Force re-run Pass 1/2 even if cached results exist')
     parser.add_argument('--no_clean_bbox', action='store_true', default=False,
@@ -270,6 +280,14 @@ def validate_cli_args(parser, args):
         parser.error('--mint_depth_wrist_only and --mint_depth_sensor_anchor require --depth_gate')
     if args.mint_depth_wrist_only and args.mint_depth_sensor_anchor:
         parser.error('--mint_depth_wrist_only and --mint_depth_sensor_anchor are mutually exclusive')
+    if args.render_hand_tracking_parquet or args.final_joints_smoother:
+        args.hand_tracking_parquet = True
+    if not 0 < args.final_smoother_max_jump_m < float('inf'):
+        parser.error('--final_smoother_max_jump_m must be finite and positive')
+    if args.parquet_mano_fit_steps < 1 or not 0 < args.parquet_mano_fit_max_rmse_m < float('inf'):
+        parser.error('Parquet MANO fitting requires positive steps and finite positive RMSE limit')
+    if args.render_hand_tracking_parquet and args.render_frontend_fallback:
+        parser.error('Choose Parquet mesh rendering or frontend skeleton fallback, not both')
     if (args.mint_3d_consistency_gate or args.hand_tracking_parquet) and not args.depth_dir:
         parser.error('--mint_3d_consistency_gate and --hand_tracking_parquet require --depth_dir')
     if args.mint_depth_wrist_threshold_m <= 0:
@@ -280,7 +298,8 @@ def validate_cli_args(parser, args):
         parser.error('--motion_iou_threshold must lie in [0,1] and joint threshold must be positive')
     if not 1 <= args.motion_min_votes <= 4 or args.motion_reacquire_frames < 1:
         parser.error('--motion_min_votes must be 1..4 and reacquire frames must be positive')
-    if args.smoother_q <= 0 or args.smoother_r <= 0 or args.smoother_beta < 0:
+    if (not np.isfinite([args.smoother_q, args.smoother_r, args.smoother_beta]).all()
+            or args.smoother_q <= 0 or args.smoother_r <= 0 or args.smoother_beta < 0):
         parser.error('--smoother_q/r must be positive and beta must be non-negative')
     if args.mint_wrist_distance_max_m <= 0 or not 0 < args.mint_wrist_vector_angle_max_deg <= 180:
         parser.error('MINT wrist distance must be positive and vector angle must lie in (0,180]')
@@ -568,7 +587,14 @@ def main():
             "final/hand_tracking.parquet"
             if args.hand_tracking_parquet and parquet_path.is_file() else None
         ),
-        "render": "final/render.mp4" if args.render else None}
+        "render": "final/render.mp4" if args.render else None,
+        "parquet_mesh_fit": (
+            "final/parquet_mesh_fit.json"
+            if args.render and args.render_hand_tracking_parquet else None
+        ),
+        "final_joints_smoother": (
+            "final/final_joints_smoother.json" if args.final_joints_smoother else None
+        )}
     artifacts.write_manifest(manifest)
 
     with open(res_path, 'wb') as f:

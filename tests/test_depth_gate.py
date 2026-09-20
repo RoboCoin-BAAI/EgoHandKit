@@ -129,6 +129,24 @@ def test_sensor_anchor_mode_keeps_mint_despite_original_depth_disagreement(tmp_p
     assert report["rejected_observations"] == 0
 
 
+def test_sensor_anchor_max_depth_and_missing_depth(tmp_path):
+    depth_root = _write_depth_sequence(tmp_path / "depth", [999, 1000, 1001, 0])
+    images = _images(tmp_path, 4)
+    frames = _frames(4)
+    for frame in frames:
+        frame["hands"][0]["keypoints_2d"][0] = [20, 20, 1]
+    gated, report = apply_depth_gate(
+        frames, images, depth_root, wrist_only=True, sensor_anchor=True,
+        max_depth_m=1.0,
+    )
+    assert [len(frame["hands"]) for frame in gated] == [1, 1, 0, 1]
+    assert report["frames"][2]["hands"]["right"]["reasons"] == ["absolute_depth_limit"]
+    meta = gated[3]["hands"][0]["meta"]
+    assert meta["force_frontend_fallback"] is True
+    assert meta["depth_gate_not_evaluated"] == "no_valid_depth"
+    assert report["rejected_observations"] == 1
+
+
 def test_sensor_anchor_mode_keeps_out_of_image_wrist_as_frontend_fallback(tmp_path):
     depth_root = _write_depth_sequence(tmp_path / "depth", [500])
     images = _images(tmp_path, 1)

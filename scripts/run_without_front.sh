@@ -181,8 +181,9 @@ python run.py \
     --mint_3d_consistency_gate \
     --endpoint_wrist_gate \
     --endpoint_wrist_max_deg 100 \
-    --temporal_smoother \
+    --final_joints_smoother \
     --hand_tracking_parquet \
+    --render_hand_tracking_parquet \
     --force_detect \
     --gpu 0 \
     --output_root "$EGO_OUTPUT_ROOT"

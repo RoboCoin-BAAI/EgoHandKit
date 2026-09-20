@@ -16,7 +16,7 @@ import numpy as np
 
 from hmr_backends.runners.schema import HandInstance, Pass3Inputs, BackendOutputInstance
 from hmr_backends.runners.factory import build_runner
-from hmr_backends.utils.render_policy import build_left_hand_policy
+from hmr_backends.utils.render_policy import build_left_hand_policy, COLOR_GREEN, COLOR_BLUE
 from hmr_backends.utils.mint_style_smoother import smooth_hand_sequence
 from hmr_backends.utils.endpoint_wrist_gate import apply_endpoint_wrist_gate
 from hmr_backends.utils.mint_3d_consistency import (
@@ -27,13 +27,6 @@ from hmr_backends.utils.mint_3d_consistency import (
 from bbox_utils import create_video_from_images
 from pipeline_artifacts import ArtifactStore, serialize_backend_outputs
 from observation_frontend.depth_gate import infer_camera_side
-
-
-# ---------------------------------------------------------------------------
-# Rendering colors
-# ---------------------------------------------------------------------------
-COLOR_GREEN = (0.2, 0.8, 0.3)
-COLOR_BLUE = (0.2, 0.4, 0.9)
 
 
 # ---------------------------------------------------------------------------
@@ -357,6 +350,36 @@ def _reproject_smoothed_outputs(raw_outputs, backend_bundle):
 
 def _render_results(raw_outputs, cleaned_data, renderer, args, out_dir, fps, left_policy, backend_bundle):
     """Render mesh overlays and stitch into a video."""
+    if not args.render:
+        return
+    if getattr(args, 'render_hand_tracking_parquet', False):
+        from hmr_backends.utils.parquet_mesh import render_tracking_parquet
+        report = render_tracking_parquet(
+            Path(out_dir) / 'final' / 'hand_tracking.parquet', cleaned_data,
+            backend_bundle.model.mano, renderer, Path(out_dir) / 'final',
+            depth_dir=args.depth_dir,
+            expected_reference_camera=infer_camera_side(getattr(args, 'input', None)),
+            fps=fps, steps=args.parquet_mano_fit_steps,
+            max_rmse_m=args.parquet_mano_fit_max_rmse_m,
+        )
+        print(f"Parquet MANO render: {report['rendered_hands']}/{report['present_hands']} hands")
+        return
+    fallback_by_frame = {}
+    if getattr(args, 'render_frontend_fallback', False):
+        from hmr_backends.utils.hand_tracking_parquet import iter_selected_hands
+        from hmr_backends.utils.fallback_overlay import draw_frontend_fallback
+        # Use the same validity/depth policy as export, not merely 2D presence.
+        for frame, hands in iter_selected_hands(
+            cleaned_data, {}, depth_dir=getattr(args, 'depth_dir', None),
+            expected_reference_camera=infer_camera_side(getattr(args, 'input', None)),
+        ):
+            fallback_by_frame[frame['img_path']] = set(hands)
+
+    def overlay(image, frame, outputs):
+        sides = fallback_by_frame.get(frame['img_path'], set())
+        sides = sides - {out.hand_side for out in outputs}
+        return draw_frontend_fallback(image, frame, sides) if sides else image
+
     by_frame = {}
     for out in raw_outputs:
         by_frame.setdefault(out.img_path, []).append(out)
@@ -372,7 +395,8 @@ def _render_results(raw_outputs, cleaned_data, renderer, args, out_dir, fps, lef
             continue
         if not frame_outputs:
             # Keep the source timeline even when neither hand is detected.
-            cv2.imwrite(os.path.join(render_dir, f'{img_fn}.jpg'), img_cv2)
+            cv2.imwrite(os.path.join(render_dir, f'{img_fn}.jpg'),
+                        overlay(img_cv2, frame_data, frame_outputs))
             continue
         all_verts, cam_list, render_is_right = [], [], []
         for fo in sorted(frame_outputs, key=lambda x: x.hand_side):
@@ -413,7 +437,8 @@ def _render_results(raw_outputs, cleaned_data, renderer, args, out_dir, fps, lef
         rendered_bgr = np.clip(
             255.0 * input_img_overlay[:, :, ::-1], 0, 255
         ).astype(np.uint8)
-        cv2.imwrite(os.path.join(render_dir, f'{img_fn}.jpg'), rendered_bgr)
+        cv2.imwrite(os.path.join(render_dir, f'{img_fn}.jpg'),
+                    overlay(rendered_bgr, frame_data, frame_outputs))
     if args.render and os.path.exists(render_dir):
         video_path = os.path.join(str(out_dir), 'final', 'render.mp4')
         create_video_from_images(render_dir, video_path, fps=fps)
@@ -427,6 +452,11 @@ def _export_hand_tracking_if_enabled(cleaned_data, results, args, out_dir):
         cleaned_data, results, Path(out_dir) / "final" / "hand_tracking.parquet",
         depth_dir=args.depth_dir,
         expected_reference_camera=infer_camera_side(getattr(args, "input", None)),
+        final_smoother=getattr(args, 'final_joints_smoother', False),
+        smoother_q=getattr(args, 'smoother_q', 0.6),
+        smoother_r=getattr(args, 'smoother_r', 0.6),
+        smoother_beta=getattr(args, 'smoother_beta', 2.0),
+        smoother_max_jump_m=getattr(args, 'final_smoother_max_jump_m', 0.2),
     )
 
 

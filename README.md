@@ -161,7 +161,7 @@ python run.py --input test_data/images/disk --backend hawor --force_detect
 | `--motion_gate` | disabled | Apply the image-space motion veto before HMR |
 | `--yolo_check` | disabled | Deprecated backward-compatible YOLO diagnostic; never validates hand presence or changes HMR input |
 | `--mint_depth_wrist_only` | disabled | Make the depth gate compare MINT joint-0 depth only with sensor depth |
-| `--mint_depth_sensor_anchor` | disabled | Use dataset depth at an in-frame MINT wrist; an out-of-image wrist keeps the frontend result directly |
+| `--mint_depth_sensor_anchor` | disabled | Use dataset wrist depth; reject above `--depth_max_m` (production: 1m); unavailable depth keeps frontend 3D without sensor calibration |
 | `--mint_depth_wrist_threshold_m` | `0.08` | Maximum absolute MINT/sensor wrist-depth difference |
 | `--mint_3d_consistency_gate` | disabled | Reject HMR samples inconsistent with available MINT camera-space joints before smoothing |
 | `--mint_wrist_distance_max_m` | `0.08` | Maximum MINT/HMR wrist distance |
@@ -170,9 +170,15 @@ python run.py --input test_data/images/disk --backend hawor --force_detect
 | `--hand_tracking_parquet` | disabled | Write `final/hand_tracking.parquet` with fixed-size camera-space joint arrays |
 | `--endpoint_wrist_gate` | disabled | Reject extreme raw wrist rotations only at track-fragment endpoints |
 | `--temporal_smoother` | disabled | Smooth camera-space MANO output after the endpoint gate |
+| `--final_joints_smoother` | disabled | Smooth selected HMR/MINT camera joints before Parquet export; production script uses this instead of HMR-only smoothing |
+| `--final_smoother_max_jump_m` | `0.2` | Restart final smoothing when any joint jumps farther between frames; does not delete hands |
 | `--gpu` | `0` | Physical CUDA GPU index. Sets both `CUDA_VISIBLE_DEVICES` and `EGL_DEVICE_ID` before importing torch, then the process uses remapped `cuda:0`. |
 | `--fps` | `15` | Output FPS for image-folder input |
 | `--render` | `True` | Render mesh overlays |
+| `--render_frontend_fallback` | `False` | Optional legacy orange fallback skeletons; mutually exclusive with Parquet mesh rendering |
+| `--render_hand_tracking_parquet` | `False` | Fit uniform MANO meshes to final Parquet joints; enables export; production script default |
+| `--parquet_mano_fit_steps` | `200` | Independent per-hand MANO fitting iterations for visualization |
+| `--parquet_mano_fit_max_rmse_m` | `0.03` | Maximum joint fit RMSE for rendering; failures recorded in `final/parquet_mesh_fit.json` |
 | `--force_detect` | `False` | Re-run Pass 1 / Pass 2 even if cache exists |
 | `--no_clean_bbox` | `False` | Skip Pass 2 temporal bbox cleaning and feed raw Pass 1 detections to Pass 3 |
 | `--use_vitpose` | `False` | Merge YOLO with Detectron2 + ViTPose detections |
