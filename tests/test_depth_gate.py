@@ -129,6 +129,33 @@ def test_sensor_anchor_mode_keeps_mint_despite_original_depth_disagreement(tmp_p
     assert report["rejected_observations"] == 0
 
 
+def test_sensor_anchor_mode_keeps_out_of_image_wrist_as_frontend_fallback(tmp_path):
+    depth_root = _write_depth_sequence(tmp_path / "depth", [500])
+    images = _images(tmp_path, 1)
+    frames = _frames(1)
+    frames[0]["hands"][0]["keypoints_2d"][0] = [20, 45, 1]
+    joints = np.zeros((21, 3), dtype=np.float32)
+    joints[:, 2] = 0.9
+    frames[0]["hands"][0]["meta"].update({
+        "joints_3d_camera": joints,
+        "camera_frame": "opencv_x_right_y_down_z_forward",
+        "joint_order": "openpose21",
+    })
+
+    gated, report = apply_depth_gate(
+        frames, images, depth_root, wrist_only=True, sensor_anchor=True,
+    )
+
+    assert len(gated[0]["hands"]) == 1
+    meta = gated[0]["hands"][0]["meta"]
+    assert meta["force_frontend_fallback"] is True
+    assert meta["depth_gate_mode"] == "frontend_fallback"
+    diagnostic = report["frames"][0]["hands"]["right"]
+    assert diagnostic["valid"] is True
+    assert diagnostic["not_evaluated_reason"] == "wrist_out_of_image"
+    assert report["frontend_fallback_observations"] == 1
+
+
 def test_wrist_only_depth_keeps_observation_without_mint_reference(tmp_path):
     depth_root = _write_depth_sequence(tmp_path / "depth", [500])
     images = _images(tmp_path, 1)

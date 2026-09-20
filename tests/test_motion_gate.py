@@ -59,3 +59,19 @@ def test_persistent_jump_reacquires_as_new_segment(tmp_path):
     assert [len(frame["hands"]) for frame in gated[3:]] == [1, 1, 1]
     assert gated[3]["hands"][0]["physical_track_fragment_id"] == 1
     assert report["counts"]["reacquired"] == 1
+
+
+def test_frontend_fallback_bypasses_motion_without_affecting_neighbors(tmp_path):
+    images = _images(tmp_path, 3)
+    normal = (20, 20, 50, 50)
+    outlier = (120, 20, 150, 50)
+    frames = _frames([normal, outlier, normal])
+    frames[1]["hands"][0]["meta"]["force_frontend_fallback"] = True
+
+    gated, report = apply_motion_gate(frames, images)
+
+    assert [len(frame["hands"]) for frame in gated] == [1, 1, 1]
+    assert gated[2]["hands"][0]["physical_track_fragment_id"] == 0
+    diagnostic = report["frames"][1]["hands"]["right"]
+    assert diagnostic["classification"] == "frontend_fallback_bypass"
+    assert report["counts"]["rejected"] == 0

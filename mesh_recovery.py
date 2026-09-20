@@ -65,6 +65,8 @@ def _collect_observation_inputs(frames, args, backend_name):
     instances, segments, by_key, last_by_track = [], [], {}, {}
     for frame in frames:
         for observation in frame['hands']:
+            if observation.get('meta', {}).get('force_frontend_fallback'):
+                continue
             # ViTPose handedness is retained in metadata, but HaWoR needs a
             # stable crop flip for an entire physical track.  The frontend
             # supplies a track-level side that is robust to transient flips.

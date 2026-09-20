@@ -35,6 +35,18 @@ def make_frames(tmp_path, observations):
     return frames
 
 
+def test_frontend_fallback_observation_is_not_sent_to_backend(tmp_path):
+    fallback = observation()
+    fallback["meta"]["force_frontend_fallback"] = True
+    regular = observation(track=1, side="right")
+    frames = make_frames(tmp_path, [[fallback, regular]])
+
+    inputs = _collect_inputs(frames, SimpleNamespace(img_focal=None), "hamer")
+
+    assert len(inputs.instances) == 1
+    assert inputs.instances[0].hand_side == "right"
+
+
 def test_all_person_proposals_and_original_gate(tmp_path):
     path = tmp_path / '000000.jpg'
     cv2.imwrite(str(path), np.zeros((100, 160, 3), np.uint8))

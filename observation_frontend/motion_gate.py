@@ -89,10 +89,15 @@ def apply_motion_gate(
         diagonals.append(float(np.hypot(image.shape[0], image.shape[1])))
 
     candidates = {}
+    frontend_fallbacks = {}
     for frame_position, frame in enumerate(frames):
         for observation in frame["hands"]:
             side = observation["handedness"]
             track = int(observation["physical_track_id"])
+            key = (frame_position, track, side)
+            if observation.get("meta", {}).get("force_frontend_fallback"):
+                frontend_fallbacks[key] = observation
+                continue
             candidates.setdefault((track, side), []).append((frame_position, observation))
 
     accepted: dict[tuple[int, int, str], dict[str, Any]] = {}
@@ -181,6 +186,24 @@ def apply_motion_gate(
                 "metrics": metrics,
                 "fragment_id": int(max_fragment),
             }
+
+    # Frontend fallbacks intentionally bypass HMR and its pre-inference motion
+    # veto. Keep them in the canonical timeline without letting an off-image
+    # projection influence adjacent motion state.
+    for (position, track, side), observation in frontend_fallbacks.items():
+        updated = dict(observation)
+        meta = dict(updated.get("meta", {}))
+        meta.update({"motion_gate": "bypass", "motion_gate_metrics": None})
+        updated["meta"] = meta
+        accepted[(position, track, side)] = updated
+        summary_counts["accepted"] += 1
+        diagnostic_key = side if side not in diagnostics[position]["hands"] else f"{side}:{track}"
+        diagnostics[position]["hands"][diagnostic_key] = {
+            "valid": True,
+            "classification": "frontend_fallback_bypass",
+            "metrics": None,
+            "fragment_id": int(updated.get("physical_track_fragment_id", 0)),
+        }
 
     output = []
     for position, frame in enumerate(frames):

@@ -74,6 +74,9 @@ def _mint_hands(
         image_shape = image.shape[:2]
     for observation in frame.get("hands", []):
         side = observation.get("handedness")
+        frontend_fallback = bool(
+            observation.get("meta", {}).get("force_frontend_fallback")
+        )
         wrist_depth = None
         if depth_path is not None:
             keypoints = np.asarray(observation.get("keypoints_2d"), dtype=np.float64)
@@ -88,7 +91,7 @@ def _mint_hands(
                 wrist_depth_m=wrist_depth,
                 camera_intrinsics=camera_intrinsics,
             )
-        elif depth_path is not None:
+        elif depth_path is not None and not frontend_fallback:
             joints = None
         else:
             joints = convert_mint_to_camera_joints(observation)
@@ -96,10 +99,10 @@ def _mint_hands(
             continue
         confidence = observation.get("confidence")
         confidence = float(confidence) if confidence is not None else None
-        hands[side] = (
-            joints.astype(np.float32), confidence,
-            str(observation.get("source", "mint")),
-        )
+        source = str(observation.get("source", "mint"))
+        if frontend_fallback:
+            source = f"{source}_frontend_fallback"
+        hands[side] = (joints.astype(np.float32), confidence, source)
     return hands
 
 

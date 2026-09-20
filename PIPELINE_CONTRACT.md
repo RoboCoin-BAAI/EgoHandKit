@@ -22,8 +22,11 @@ For production MINT runs, `--mint_depth_sensor_anchor` samples registered
 dataset depth at the projected MINT wrist. A valid sample becomes the wrist's
 absolute depth anchor; disagreement with MINT's original absolute Z is kept as
 diagnostic data and does not reject the observation. Only a missing/invalid
-sensor wrist depth rejects it. The older `--mint_depth_wrist_only` comparison
-mode remains available for compatibility.
+sensor wrist depth at an in-frame projection rejects it. When MINT predicts a
+wrist outside the image, the observation is marked `frontend_fallback`, is not
+sent to HMR, and its original frontend 3D is retained in Parquet with source
+`mint_frontend_fallback`. The older `--mint_depth_wrist_only` comparison mode
+remains available for compatibility.
 
 The optional MINT 3D consistency gate runs after backend inference. When a
 canonical hand carries `meta.joints_3d_camera`, it compares camera-space wrist

@@ -207,6 +207,7 @@ def apply_depth_gate(
                 hand_state["history"].clear()
             diagnostic_key = side if side not in frame_diag["hands"] else f"{side}:{track}"
             mint_wrist_depth_m = None
+            frontend_fallback = False
             if wrist_only:
                 keypoints = np.asarray(observation["keypoints_2d"], dtype=np.float64)
                 wrist_projection_valid = (
@@ -214,11 +215,20 @@ def apply_depth_gate(
                     and np.isfinite(keypoints[0]).all()
                     and keypoints[0, 2] > 0
                 )
+                image_h, image_w = image.shape[:2]
+                wrist_in_image = (
+                    wrist_projection_valid
+                    and 0 <= keypoints[0, 0] < image_w
+                    and 0 <= keypoints[0, 1] < image_h
+                )
+                frontend_fallback = bool(
+                    sensor_anchor and wrist_projection_valid and not wrist_in_image
+                )
                 depth_m = (
                     depth_for_image_point(
                         depth_path, keypoints[0, :2], image.shape[:2], unit_scale=unit_scale
                     )
-                    if wrist_projection_valid else None
+                    if wrist_in_image else None
                 )
                 mint_wrist_depth_m = _mint_wrist_depth(observation)
             else:
@@ -235,8 +245,10 @@ def apply_depth_gate(
             )
             reasons = []
             not_evaluated_reason = (
-                "missing_mint_wrist_depth"
-                if wrist_only and not sensor_anchor and mint_wrist_depth_m is None else None
+                "wrist_out_of_image" if frontend_fallback
+                else "missing_mint_wrist_depth"
+                if wrist_only and not sensor_anchor and mint_wrist_depth_m is None
+                else None
             )
             if not_evaluated_reason is not None:
                 pass
@@ -260,17 +272,19 @@ def apply_depth_gate(
                 updated["physical_track_fragment_id"] = int(hand_state["fragment"])
                 meta = dict(updated.get("meta", {}))
                 meta.update({"depth_gate": "pass", "depth_m": depth_m, "depth_reference_m": reference})
-                if wrist_only and not_evaluated_reason is None:
+                if wrist_only:
                     meta.update({"depth_joint_used": "wrist", "mint_wrist_depth_m": mint_wrist_depth_m,
                                  "sensor_wrist_depth_m": depth_m,
                                  "depth_difference_m": depth_difference_m,
                                  "depth_gate_mode": (
-                                     "sensor_wrist_anchor" if sensor_anchor
+                                     "frontend_fallback" if frontend_fallback
+                                     else "sensor_wrist_anchor" if sensor_anchor
                                      else "mint_sensor_comparison"
                                  )})
-                elif wrist_only:
-                    meta.update({"depth_joint_used": "wrist",
-                                 "depth_gate_not_evaluated": not_evaluated_reason})
+                    if not_evaluated_reason is not None:
+                        meta["depth_gate_not_evaluated"] = not_evaluated_reason
+                    if frontend_fallback:
+                        meta["force_frontend_fallback"] = True
                 updated["meta"] = meta
                 kept.append(updated)
             else:
@@ -290,7 +304,8 @@ def apply_depth_gate(
                     "sensor_wrist_depth_m": depth_m,
                     "depth_difference_m": depth_difference_m,
                     "depth_gate_mode": (
-                        "sensor_wrist_anchor" if sensor_anchor and wrist_only
+                        "frontend_fallback" if frontend_fallback
+                        else "sensor_wrist_anchor" if sensor_anchor and wrist_only
                         else "mint_sensor_comparison" if wrist_only else "bbox"
                     ),
                     "not_evaluated_reason": not_evaluated_reason,
@@ -304,7 +319,8 @@ def apply_depth_gate(
                 "sensor_wrist_depth_m": depth_m,
                 "depth_difference_m": depth_difference_m,
                 "depth_gate_mode": (
-                    "sensor_wrist_anchor" if sensor_anchor and wrist_only
+                    "frontend_fallback" if frontend_fallback
+                    else "sensor_wrist_anchor" if sensor_anchor and wrist_only
                     else "mint_sensor_comparison" if wrist_only else "bbox"
                 ),
                 "not_evaluated_reason": not_evaluated_reason,
@@ -324,5 +340,10 @@ def apply_depth_gate(
         ),
         "depth_joint_used": "wrist" if wrist_only else "bbox", "frames": diagnostics,
         "rejected_observations": sum(sum(not item["valid"] for item in row["hands"].values()) for row in diagnostics),
+        "frontend_fallback_observations": sum(
+            sum(item["depth_gate_mode"] == "frontend_fallback"
+                for item in row["hands"].values())
+            for row in diagnostics
+        ),
     }
     return output, summary
