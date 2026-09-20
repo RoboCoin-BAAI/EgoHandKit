@@ -207,7 +207,11 @@ def test_selected_cache_reused_and_signature_change_invalidates(tmp_path, monkey
 def test_overlay_default_and_explicit_omega():
     from run import build_arg_parser
     parser = build_arg_parser()
-    assert not parser.parse_args(['--input', 'unused']).omega_world
+    defaults = parser.parse_args(['--input', 'unused'])
+    assert not defaults.omega_world
+    assert not defaults.mint_depth_wrist_only
+    assert not defaults.mint_3d_consistency_gate
+    assert not defaults.hand_tracking_parquet
     assert not parser.parse_args(['--input', 'unused', '--frontend', 'observations']).omega_world
     assert parser.parse_args(['--input', 'unused', '--omega_world']).omega_world
     assert not parser.parse_args(['--input', 'unused', '--no_omega_world']).omega_world

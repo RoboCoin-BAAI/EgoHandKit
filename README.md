@@ -159,7 +159,14 @@ python run.py --input test_data/images/disk --backend hawor --force_detect
 | `--output_root` | `test_data/hand_proc` | Root directory for run outputs |
 | `--depth_gate` / `--depth_dir` | disabled | Apply the generic depth veto before HMR; `depth_dir` is the export root containing `fast_foundation/depth_uint16_png` |
 | `--motion_gate` | disabled | Apply the image-space motion veto before HMR |
-| `--yolo_check` | disabled | Compare canonical boxes with YOLO diagnostically; never changes HMR input |
+| `--yolo_check` | disabled | Deprecated backward-compatible YOLO diagnostic; never validates hand presence or changes HMR input |
+| `--mint_depth_wrist_only` | disabled | Make the depth gate compare MINT joint-0 depth only with sensor depth |
+| `--mint_depth_wrist_threshold_m` | `0.08` | Maximum absolute MINT/sensor wrist-depth difference |
+| `--mint_3d_consistency_gate` | disabled | Reject HMR samples inconsistent with available MINT camera-space joints before smoothing |
+| `--mint_wrist_distance_max_m` | `0.08` | Maximum MINT/HMR wrist distance |
+| `--mint_wrist_vector_angle_max_deg` | `40` | Maximum wrist-to-palm vector angle |
+| `--mint_hand_scale_min` / `--mint_hand_scale_max` | `0.7` / `1.3` | Allowed HMR/MINT hand-scale ratio |
+| `--hand_tracking_parquet` | disabled | Write `final/hand_tracking.parquet` with fixed-size camera-space joint arrays |
 | `--endpoint_wrist_gate` | disabled | Reject extreme raw wrist rotations only at track-fragment endpoints |
 | `--temporal_smoother` | disabled | Smooth camera-space MANO output after the endpoint gate |
 | `--gpu` | `0` | Physical CUDA GPU index. Sets both `CUDA_VISIBLE_DEVICES` and `EGL_DEVICE_ID` before importing torch, then the process uses remapped `cuda:0`. |
@@ -235,6 +242,12 @@ Canonical mode writes the remapped, validated input to
 versioned `egohand.results.v1` payload to `final/results.pkl`. The loader matches
 the artifact to the current frame count, order, resolution and FPS, then remaps
 its image paths by stable `frame_idx`.
+
+When enabled, the 3D gate writes
+`stages/45_mint_3d_consistency/mint_3d_consistency.json`. Rejected backend
+samples do not enter the endpoint gate or smoother. Parquet export prefers the
+accepted HMR joints and falls back to the canonical MINT joints when HMR is
+missing or rejected.
 
 ## External MANO Conversion
 

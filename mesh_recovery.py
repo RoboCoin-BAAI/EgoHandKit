@@ -19,6 +19,10 @@ from hmr_backends.runners.factory import build_runner
 from hmr_backends.utils.render_policy import build_left_hand_policy
 from hmr_backends.utils.mint_style_smoother import smooth_hand_sequence
 from hmr_backends.utils.endpoint_wrist_gate import apply_endpoint_wrist_gate
+from hmr_backends.utils.mint_3d_consistency import (
+    apply_mint_3d_consistency_gate,
+    convert_hmr_to_camera_joints,
+)
 from bbox_utils import create_video_from_images
 from pipeline_artifacts import ArtifactStore, serialize_backend_outputs
 
@@ -182,7 +186,7 @@ def _assemble_results(raw_outputs, cleaned_data):
     for frame_data in cleaned_data:
         img_path = frame_data['img_path']
         frame_outputs = by_frame.get(img_path, [])
-        mano_list, cam_list, tracked_ids, extra_data, backend_meta = [], [], [], [], []
+        mano_list, cam_list, tracked_ids, extra_data, backend_meta, joints_3d = [], [], [], [], [], []
         for fo in sorted(frame_outputs, key=lambda x: x.raw_backend_meta.get(
                 'physical_track_id', 1 if x.hand_side == 'right' else 0)):
             tracked_id = fo.raw_backend_meta.get('physical_track_id', 1 if fo.hand_side == 'right' else 0)
@@ -191,6 +195,7 @@ def _assemble_results(raw_outputs, cleaned_data):
             tracked_ids.append(tracked_id)
             extra_data.append(fo.pred_keypoints_2d.tolist())
             backend_meta.append(fo.raw_backend_meta)
+            joints_3d.append(convert_hmr_to_camera_joints(fo))
         results_dict[img_path] = {
             'mano': mano_list,
             'cam_trans': cam_list,
@@ -200,6 +205,7 @@ def _assemble_results(raw_outputs, cleaned_data):
             'tid': np.array(tracked_ids),
             'shot': 0,
             'backend_meta': backend_meta,
+            'joints_3d': joints_3d,
         }
         if 'hands' in frame_data:
             results_dict[img_path]['track_id_semantics'] = 'anonymous_physical_slot'
@@ -271,7 +277,7 @@ def _smooth_raw_outputs(raw_outputs, backend_bundle, device, args):
                 params["betas"] = value[99:109].astype(np.float32)
                 output.mano_params = params
                 output.cam_trans = value[:3].astype(np.float32)
-                output.pred_vertices = _recompute_vertices(
+                output.pred_vertices, output.pred_joints_3d = _recompute_geometry(
                     backend_bundle.model, params, device)
                 output.raw_backend_meta["temporal_smoother"] = {
                     "q": float(args.smoother_q),
@@ -291,7 +297,7 @@ def _rotation6d_to_matrix(value):
     return np.stack([b0, b1, b2], axis=1)
 
 
-def _recompute_vertices(model, params, device):
+def _recompute_geometry(model, params, device):
     import torch
     rotmat = np.concatenate([
         _numpy_value(params['global_orient']).reshape(1, 3, 3),
@@ -302,7 +308,10 @@ def _recompute_vertices(model, params, device):
             'pred_rotmat': torch.from_numpy(rotmat).unsqueeze(0).float().to(device),
             'pred_shape': torch.from_numpy(_numpy_value(params['betas']).reshape(1, 10)).float().to(device),
         })
-    return output.vertices[0].detach().cpu().numpy()
+    return (
+        output.vertices[0].detach().cpu().numpy(),
+        output.joints[0, :21].detach().cpu().numpy(),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -370,6 +379,15 @@ def _render_results(raw_outputs, cleaned_data, renderer, args, out_dir, fps, lef
         create_video_from_images(render_dir, video_path, fps=fps)
 
 
+def _export_hand_tracking_if_enabled(cleaned_data, results, args, out_dir):
+    if not getattr(args, 'hand_tracking_parquet', False):
+        return None
+    from hmr_backends.utils.hand_tracking_parquet import export_hand_tracking_parquet
+    return export_hand_tracking_parquet(
+        cleaned_data, results, Path(out_dir) / "final" / "hand_tracking.parquet"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
@@ -408,13 +426,34 @@ def run_mesh_recovery(cleaned_data, backend_bundle, renderer, args, out_dir, fps
         renderer.focal_length = inputs.img_focal
     if not inputs.instances:
         print("No hand instances; preserving empty results and the full video timeline.")
+        if getattr(args, 'mint_3d_consistency_gate', False):
+            _, consistency_report = apply_mint_3d_consistency_gate(
+                [],
+                wrist_distance_max_m=args.mint_wrist_distance_max_m,
+                wrist_vector_angle_max_deg=args.mint_wrist_vector_angle_max_deg,
+                hand_scale_min=args.mint_hand_scale_min,
+                hand_scale_max=args.mint_hand_scale_max,
+            )
+            artifacts = ArtifactStore(out_dir)
+            artifacts.write_json(
+                artifacts.stage_dir("45_mint_3d_consistency") / "mint_3d_consistency.json",
+                consistency_report,
+            )
+            artifacts.write_pickle(
+                artifacts.stage_dir("45_mint_3d_consistency") / "checked_outputs.pkl", []
+            )
+            artifacts.write_pickle(
+                artifacts.stage_dir("45_mint_3d_consistency") / "outputs.pkl", []
+            )
         if getattr(args, 'endpoint_wrist_gate', False):
             _, pose_report = apply_endpoint_wrist_gate([], endpoint_wrist_max_deg=args.endpoint_wrist_max_deg)
             Path(out_dir).mkdir(parents=True, exist_ok=True)
             artifacts = ArtifactStore(out_dir)
             artifacts.write_json(artifacts.stage_dir("50_endpoint_wrist_gate") / "report.json", pose_report)
+        results = _assemble_results([], cleaned_data)
+        _export_hand_tracking_if_enabled(cleaned_data, results, args, out_dir)
         _render_results([], cleaned_data, renderer, args, out_dir, fps, None, backend_bundle)
-        return _assemble_results([], cleaned_data)
+        return results
     runner = build_runner(backend_bundle, args, device)
     left_policy = build_left_hand_policy(device=device)
     raw_outputs = runner.infer(inputs)
@@ -422,6 +461,26 @@ def run_mesh_recovery(cleaned_data, backend_bundle, renderer, args, out_dir, fps
     artifacts.write_pickle(artifacts.stage_dir("40_backend_raw") / "outputs.pkl", serialize_backend_outputs(raw_outputs))
     artifacts.write_json(artifacts.stage_dir("40_backend_raw") / "summary.json", {
         "schema_version": "egohand.backend_outputs.v1", "count": len(raw_outputs), "stage": "pre_gate_pre_smoother"})
+    if getattr(args, 'mint_3d_consistency_gate', False):
+        checked_outputs = raw_outputs
+        raw_outputs, consistency_report = apply_mint_3d_consistency_gate(
+            checked_outputs,
+            wrist_distance_max_m=args.mint_wrist_distance_max_m,
+            wrist_vector_angle_max_deg=args.mint_wrist_vector_angle_max_deg,
+            hand_scale_min=args.mint_hand_scale_min,
+            hand_scale_max=args.mint_hand_scale_max,
+        )
+        consistency_stage = artifacts.stage_dir("45_mint_3d_consistency")
+        artifacts.write_pickle(
+            consistency_stage / "checked_outputs.pkl",
+            serialize_backend_outputs(checked_outputs),
+        )
+        artifacts.write_pickle(
+            consistency_stage / "outputs.pkl", serialize_backend_outputs(raw_outputs)
+        )
+        artifacts.write_json(
+            consistency_stage / "mint_3d_consistency.json", consistency_report
+        )
     if getattr(args, 'endpoint_wrist_gate', False):
         raw_outputs, pose_report = apply_endpoint_wrist_gate(
             raw_outputs, endpoint_wrist_max_deg=args.endpoint_wrist_max_deg)
@@ -435,6 +494,7 @@ def run_mesh_recovery(cleaned_data, backend_bundle, renderer, args, out_dir, fps
             "schema_version": "egohand.smoother.v1", "q": args.smoother_q,
             "r": args.smoother_r, "beta": args.smoother_beta, "count": len(raw_outputs)})
     results = _assemble_results(raw_outputs, cleaned_data)
+    _export_hand_tracking_if_enabled(cleaned_data, results, args, out_dir)
     _render_results(raw_outputs, cleaned_data, renderer, args, out_dir, fps, left_policy, backend_bundle)
 
     print("\n" + "=" * 80)

@@ -11,12 +11,37 @@ import cv2
 import numpy as np
 
 OBSERVATION_SCHEMA = "egohand.observations.v1"
+CAMERA_JOINT_FRAME = "opencv_x_right_y_down_z_forward"
+CAMERA_JOINT_ORDER = "openpose21"
 
 
 def _finite(value, name):
     array = np.asarray(value, dtype=float)
     if not np.isfinite(array).all():
         raise ValueError(f"{name} contains non-finite values")
+
+
+def camera_joints_from_observation(reference: Mapping[str, Any] | None) -> np.ndarray | None:
+    """Read supported camera-space 21-joint metadata without guessing conventions."""
+    if reference is None:
+        return None
+    candidates: list[Mapping[str, Any]] = [reference]
+    for key in ("meta", "observation_meta"):
+        nested = reference.get(key)
+        if isinstance(nested, Mapping):
+            candidates.append(nested)
+    for candidate in candidates:
+        if (candidate.get("camera_frame") != CAMERA_JOINT_FRAME
+                or candidate.get("joint_order") != CAMERA_JOINT_ORDER):
+            continue
+        for key in ("joints_3d_camera", "mint_joints_3d_camera", "joints_3d_cam", "joints_cam"):
+            value = candidate.get(key)
+            if value is None:
+                continue
+            joints = np.asarray(value, dtype=np.float64)
+            if joints.shape == (21, 3) and np.isfinite(joints).all():
+                return joints
+    return None
 
 
 def validate_hand_observation(hand: Mapping[str, Any]) -> None:

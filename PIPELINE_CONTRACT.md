@@ -10,12 +10,20 @@ The downstream stages are frontend-independent:
 
 ```text
 frontend -> canonical observations -> depth gate -> motion gate -> backend
-         -> endpoint wrist gate -> temporal smoother -> canonical results
+         -> MINT 3D consistency gate -> endpoint wrist gate
+         -> temporal smoother -> canonical results -> Parquet export
 ```
 
 Depth and motion gates preserve canonical frames and split fragments when they
 reject an observation. YOLO checking is diagnostic-only and has
 `decision_effect: none`.
+
+The optional MINT 3D consistency gate runs after backend inference. When a
+canonical hand carries `meta.joints_3d_camera`, it compares camera-space wrist
+position, wrist-to-palm direction and wrist-to-middle-MCP scale against the HMR
+result. A rejected HMR sample is removed before endpoint gating and smoothing;
+the canonical observation remains available as the Parquet fallback. Missing
+MINT geometry never rejects an HMR sample.
 
 The endpoint wrist gate groups raw backend outputs by track, side, and fragment,
 splits on missing frame indices, and for runs of at least four frames rejects
@@ -96,3 +104,11 @@ resolution, and FPS. Since extracted-frame directories can differ between
 runs, `frame_idx` is the stable identity and each validated `img_path` is
 remapped to the current input frame. The current run writes that remapped
 sequence to `stages/00_frontend/observations.pkl`.
+
+For the optional MINT 3D and wrist-depth gates, producers may include a finite
+`[21,3]` OpenPose-ordered camera-space array in each hand's
+`meta.joints_3d_camera`. This is optional metadata and does not change the
+canonical observation schema. The same metadata mapping must declare
+`joint_order: openpose21` and
+`camera_frame: opencv_x_right_y_down_z_forward`; unsupported or undeclared
+conventions are treated as a missing reference rather than guessed.

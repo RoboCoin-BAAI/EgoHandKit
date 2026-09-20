@@ -48,6 +48,84 @@ def _frames(count: int) -> list[dict]:
     ]
 
 
+def test_wrist_only_depth_compares_mint_and_sensor_depth(tmp_path):
+    depth_root = _write_depth_sequence(tmp_path / "depth", [500])
+    images = _images(tmp_path, 1)
+    frames = _frames(1)
+    frames[0]["hands"][0]["keypoints_2d"][0] = [20, 20, 1]
+    joints = np.zeros((21, 3), dtype=np.float32)
+    joints[:, 2] = 0.55
+    frames[0]["hands"][0]["meta"].update({
+        "joints_3d_camera": joints,
+        "camera_frame": "opencv_x_right_y_down_z_forward",
+        "joint_order": "openpose21",
+    })
+
+    gated, report = apply_depth_gate(
+        frames, images, depth_root, wrist_only=True, wrist_threshold_m=0.08
+    )
+
+    assert len(gated[0]["hands"]) == 1
+    assert gated[0]["hands"][0]["meta"]["depth_joint_used"] == "wrist"
+    diagnostic = report["frames"][0]["hands"]["right"]
+    assert diagnostic["depth_joint_used"] == "wrist"
+    assert diagnostic["mint_wrist_depth_m"] == np.float32(0.55)
+
+
+def test_wrist_only_depth_rejects_sensor_disagreement(tmp_path):
+    depth_root = _write_depth_sequence(tmp_path / "depth", [500])
+    images = _images(tmp_path, 1)
+    frames = _frames(1)
+    frames[0]["hands"][0]["keypoints_2d"][0] = [20, 20, 1]
+    joints = np.zeros((21, 3), dtype=np.float32)
+    joints[:, 2] = 0.7
+    frames[0]["hands"][0]["meta"].update({
+        "joints_3d_camera": joints,
+        "camera_frame": "opencv_x_right_y_down_z_forward",
+        "joint_order": "openpose21",
+    })
+
+    gated, report = apply_depth_gate(
+        frames, images, depth_root, wrist_only=True, wrist_threshold_m=0.08
+    )
+
+    assert gated[0]["hands"] == []
+    assert report["frames"][0]["hands"]["right"]["reasons"] == ["wrist_depth_mismatch"]
+
+
+def test_wrist_only_depth_keeps_observation_without_mint_reference(tmp_path):
+    depth_root = _write_depth_sequence(tmp_path / "depth", [500])
+    images = _images(tmp_path, 1)
+    frames = _frames(1)
+    frames[0]["hands"][0]["keypoints_2d"][0] = [20, 20, 1]
+
+    gated, report = apply_depth_gate(frames, images, depth_root, wrist_only=True)
+
+    assert len(gated[0]["hands"]) == 1
+    diagnostic = report["frames"][0]["hands"]["right"]
+    assert diagnostic["valid"] is True
+    assert diagnostic["not_evaluated_reason"] == "missing_mint_wrist_depth"
+
+
+def test_wrist_only_depth_rejects_invalid_wrist_projection(tmp_path):
+    depth_root = _write_depth_sequence(tmp_path / "depth", [500])
+    images = _images(tmp_path, 1)
+    frames = _frames(1)
+    joints = np.zeros((21, 3), dtype=np.float32)
+    joints[:, 2] = 0.5
+    frames[0]["hands"][0]["meta"].update({
+        "joints_3d_camera": joints,
+        "camera_frame": "opencv_x_right_y_down_z_forward",
+        "joint_order": "openpose21",
+    })
+    frames[0]["hands"][0]["keypoints_2d"][0] = [0, 0, 0]
+
+    gated, report = apply_depth_gate(frames, images, depth_root, wrist_only=True)
+
+    assert gated[0]["hands"] == []
+    assert report["frames"][0]["hands"]["right"]["reasons"] == ["no_valid_depth"]
+
+
 def test_depth_gate_rejects_outlier_and_starts_new_fragment(tmp_path):
     depth_root = _write_depth_sequence(tmp_path / "depth", [500, 2000, 500])
     images = _images(tmp_path, 3)

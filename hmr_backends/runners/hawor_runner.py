@@ -61,6 +61,10 @@ class HaworBackendRunner(BaseBackendRunner):
                     cam_trans=pred_trans[local_i],
                     pred_vertices=mano_output.vertices[0].detach().cpu().numpy(),
                     pred_keypoints_2d=keypoints,
+                    pred_joints_3d=(
+                        mano_output.joints[0, :21].detach().cpu().numpy()
+                        if hasattr(mano_output, 'joints') else None
+                    ),
                     raw_backend_meta={
                         'backend': 'hawor',
                         'pred_rotmat': rotmat,

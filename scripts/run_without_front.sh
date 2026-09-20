@@ -170,11 +170,13 @@ python run.py \
     --depth_gate \
     --depth_dir "$DEPTH_DIR" \
     --depth_max_m 1.0 \
+    --mint_depth_wrist_only \
     --motion_gate \
-    --yolo_check \
+    --mint_3d_consistency_gate \
     --endpoint_wrist_gate \
     --endpoint_wrist_max_deg 100 \
     --temporal_smoother \
+    --hand_tracking_parquet \
     --force_detect \
     --gpu 0 \
     --output_root "$EGO_OUTPUT_ROOT"

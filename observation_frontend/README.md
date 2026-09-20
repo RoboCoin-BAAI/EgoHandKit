@@ -21,8 +21,14 @@ producer.
 ## Optional Depth Veto
 
 For sequences with exported stereo depth, use the generic `--depth_gate
---depth_dir` options. `--yolo_check` is diagnostic only: it compares canonical
-boxes against legacy YOLO boxes and never changes HMR input.
+--depth_dir` options. Add `--mint_depth_wrist_only` to compare the sensor depth
+at joint 0 with the MINT camera-space wrist depth. The legacy `--yolo_check`
+option remains diagnostic-only for backward compatibility and is not part of
+production hand-presence validation.
+
+`--mint_3d_consistency_gate` optionally validates recovered HMR geometry against
+MINT camera-space joints before endpoint gating and smoothing. It never rejects
+when the canonical observation has no MINT 3D reference.
 
 ## Scope
 

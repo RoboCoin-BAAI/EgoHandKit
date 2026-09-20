@@ -256,7 +256,8 @@ def hand_record(
             "projection_valid": True,
             "confidence_type": "mint_presence_projected",
             "camera_frame": "opencv_x_right_y_down_z_forward",
-            "joint_order": "mano21",
+            "joint_order": "openpose21",
+            "joints_3d_camera": np.asarray(joints, dtype=np.float32).tolist(),
             "input_transform": "resize_only",
         },
     }

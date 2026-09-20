@@ -35,4 +35,5 @@ class BackendOutputInstance:
     cam_trans: np.ndarray
     pred_vertices: np.ndarray
     pred_keypoints_2d: np.ndarray
+    pred_joints_3d: np.ndarray | None = None
     raw_backend_meta: dict[str, Any] = field(default_factory=dict)

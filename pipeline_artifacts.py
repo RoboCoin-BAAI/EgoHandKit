@@ -42,5 +42,7 @@ def serialize_backend_outputs(outputs: list[Any]) -> list[dict[str, Any]]:
         records.append({"frame_idx": int(output.frame_idx), "img_path": str(output.img_path),
             "hand_side": output.hand_side, "mano_params": output.mano_params,
             "cam_trans": output.cam_trans, "pred_vertices": output.pred_vertices,
-            "pred_keypoints_2d": output.pred_keypoints_2d, "raw_backend_meta": output.raw_backend_meta})
+            "pred_keypoints_2d": output.pred_keypoints_2d,
+            "pred_joints_3d": output.pred_joints_3d,
+            "raw_backend_meta": output.raw_backend_meta})
     return records

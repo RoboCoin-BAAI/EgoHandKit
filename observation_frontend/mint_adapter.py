@@ -382,7 +382,10 @@ def build_mint_observations(predictions: Mapping[str, Any], image_paths: list[st
             keypoints = np.column_stack((keypoint_xy, keypoint_confidence))
             observation_meta = {"source": "mint", "hand_presence": float(predictions["presence"][i, side_index]),
                 "projection_valid": True, "confidence_type": "mint_presence_projected",
-                "mint_presence_field": predictions["presence_field"], "camera_frame": "opencv_x_right_y_down_z_forward"}
+                "mint_presence_field": predictions["presence_field"],
+                "camera_frame": "opencv_x_right_y_down_z_forward",
+                "joint_order": "openpose21",
+                "joints_3d_camera": np.asarray(points, dtype=np.float32).tolist()}
             frame["selected_for_hamer"].append({
                 "bbox_xyxy": bbox.tolist(), "vitpose_keypoints_2d": keypoints.tolist(),
                 "handedness": side, "backend_handedness": side,

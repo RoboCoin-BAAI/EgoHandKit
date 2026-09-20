@@ -180,6 +180,9 @@ def convert(
                 "meta": {
                     "parameter_path": str(parameter_path),
                     "camera_intrinsics": np.asarray(parameters["intrinsics"][frame_idx, hand_idx]).tolist(),
+                    "joints_3d_camera": joints[frame_idx, hand_idx].astype(np.float32).tolist(),
+                    "camera_frame": "opencv_x_right_y_down_z_forward",
+                    "joint_order": "openpose21",
                     "external_valid": True,
                 },
             })

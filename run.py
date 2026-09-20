@@ -136,7 +136,7 @@ def build_arg_parser():
     parser.add_argument('--observations', type=str, default=None,
                         help='Canonical egohand.observations.v1 pickle; required with --frontend canonical')
     parser.add_argument('--yolo_check', action='store_true', default=False,
-                        help='Run full-image YOLO as a diagnostic comparison; never changes canonical observations')
+                        help='Deprecated diagnostic-only YOLO comparison; never validates or changes hand presence')
     parser.add_argument('--yolo_check_iou_threshold', type=float, default=0.1,
                         help='IoU threshold used by --yolo_check')
     parser.add_argument('--temporal_smoother', action='store_true', default=False,
@@ -167,6 +167,10 @@ def build_arg_parser():
                         help='Number of recent valid depths used as the relative reference')
     parser.add_argument('--depth_max_bad_frames', type=int, default=2,
                         help='Consecutive bad-frame budget recorded by the gate; any bad frame starts a new fragment')
+    parser.add_argument('--mint_depth_wrist_only', action='store_true', default=False,
+                        help='Compare only MINT joint-0 wrist depth with sensor depth')
+    parser.add_argument('--mint_depth_wrist_threshold_m', type=float, default=0.08,
+                        help='Maximum absolute MINT/sensor wrist-depth difference in metres')
     parser.add_argument('--motion_gate', action='store_true', default=False,
                         help='Reject implausible image-space jumps before HaMeR')
     parser.add_argument('--motion_center_threshold', type=float, default=0.25,
@@ -189,6 +193,18 @@ def build_arg_parser():
                         help='Optional robust constant-velocity prior for observations association')
     parser.add_argument('--switch_penalty', type=float, default=0.0,
                         help='Optional penalty for high-cost continued track assignments')
+    parser.add_argument('--mint_3d_consistency_gate', action='store_true', default=False,
+                        help='Reject HMR outputs inconsistent with an available MINT camera-space 3D prior')
+    parser.add_argument('--mint_wrist_distance_max_m', type=float, default=0.08,
+                        help='Maximum MINT/HMR wrist distance in metres')
+    parser.add_argument('--mint_wrist_vector_angle_max_deg', type=float, default=40.0,
+                        help='Maximum MINT/HMR wrist-to-palm vector angle')
+    parser.add_argument('--mint_hand_scale_min', type=float, default=0.7,
+                        help='Minimum HMR/MINT wrist-to-middle-MCP scale ratio')
+    parser.add_argument('--mint_hand_scale_max', type=float, default=1.3,
+                        help='Maximum HMR/MINT wrist-to-middle-MCP scale ratio')
+    parser.add_argument('--hand_tracking_parquet', action='store_true', default=False,
+                        help='Write final/hand_tracking.parquet with camera-space 21-joint tracks')
     parser.add_argument('--output_root', type=str, default='test_data/hand_proc',
                         help='Root directory for outputs. Default: test_data/hand_proc')
     parser.add_argument('--fps', type=float, default=15.0,
@@ -248,6 +264,8 @@ def validate_cli_args(parser, args):
         parser.error('--endpoint_wrist_max_deg must be positive')
     if args.depth_gate and not args.depth_dir:
         parser.error('--depth_gate requires --depth_dir')
+    if args.mint_depth_wrist_threshold_m <= 0:
+        parser.error('--mint_depth_wrist_threshold_m must be positive')
     if args.motion_center_threshold <= 0 or args.motion_size_ratio < 1:
         parser.error('--motion_center_threshold must be positive and --motion_size_ratio must be >= 1')
     if not 0 <= args.motion_iou_threshold <= 1 or args.motion_joint_threshold <= 0:
@@ -256,6 +274,10 @@ def validate_cli_args(parser, args):
         parser.error('--motion_min_votes must be 1..4 and reacquire frames must be positive')
     if args.smoother_q <= 0 or args.smoother_r <= 0 or args.smoother_beta < 0:
         parser.error('--smoother_q/r must be positive and beta must be non-negative')
+    if args.mint_wrist_distance_max_m <= 0 or not 0 < args.mint_wrist_vector_angle_max_deg <= 180:
+        parser.error('MINT wrist distance must be positive and vector angle must lie in (0,180]')
+    if args.mint_hand_scale_min <= 0 or args.mint_hand_scale_max < args.mint_hand_scale_min:
+        parser.error('MINT hand scale limits must satisfy 0 < min <= max')
     if args.fps <= 0:
         parser.error('--fps must be positive')
     return args
@@ -442,7 +464,9 @@ def main():
                 pipeline_sequence["frames"], img_paths, args.depth_dir, min_depth_m=args.depth_min_m,
                 max_depth_m=args.depth_max_m, max_ratio=args.depth_max_ratio,
                 min_ratio=args.depth_min_ratio, history_size=args.depth_history,
-                max_bad_frames=args.depth_max_bad_frames)
+                max_bad_frames=args.depth_max_bad_frames,
+                wrist_only=args.mint_depth_wrist_only,
+                wrist_threshold_m=args.mint_depth_wrist_threshold_m)
             pipeline_sequence = {**pipeline_sequence, "frames": gated_frames}
             validate_observation_sequence(pipeline_sequence)
             depth_stage = artifacts.stage_dir("10_depth_gate")
@@ -513,15 +537,22 @@ def main():
     artifacts.write_pickle(final_dir / "results.pkl", final_payload)
     artifacts.write_json(final_dir / "summary.json", {"schema_version": "egohand.summary.v1", **final_payload["summary"],
         "frontend": {"name": args.frontend}, "backend": args.backend})
+    parquet_path = final_dir / "hand_tracking.parquet"
     manifest["pipeline"].extend([
         {"name": "depth_gate", "enabled": bool(args.depth_gate), "artifact": "stages/10_depth_gate/observations.pkl" if args.depth_gate else None},
         {"name": "motion_gate", "enabled": bool(args.motion_gate), "artifact": "stages/20_motion_gate/observations.pkl" if args.motion_gate else None},
         {"name": "yolo_check", "enabled": bool(args.yolo_check), "artifact": "stages/30_yolo_check/report.json" if args.yolo_check else None},
         {"name": "backend_raw", "enabled": True, "artifact": "stages/40_backend_raw/outputs.pkl"},
+        {"name": "mint_3d_consistency_gate", "enabled": bool(args.mint_3d_consistency_gate),
+         "artifact": "stages/45_mint_3d_consistency/mint_3d_consistency.json" if args.mint_3d_consistency_gate else None},
         {"name": "endpoint_wrist_gate", "enabled": bool(args.endpoint_wrist_gate), "artifact": "stages/50_endpoint_wrist_gate/outputs.pkl" if args.endpoint_wrist_gate else None},
         {"name": "temporal_smoother", "enabled": bool(args.temporal_smoother), "artifact": "stages/60_smoother/outputs.pkl" if args.temporal_smoother else None},
     ])
     manifest["final_artifacts"] = {"results": "final/results.pkl", "summary": "final/summary.json",
+        "hand_tracking_parquet": (
+            "final/hand_tracking.parquet"
+            if args.hand_tracking_parquet and parquet_path.is_file() else None
+        ),
         "render": "final/render.mp4" if args.render else None}
     artifacts.write_manifest(manifest)
 

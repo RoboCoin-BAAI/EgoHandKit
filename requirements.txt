@@ -17,6 +17,7 @@ scipy==1.14.1
 scikit-image==0.25.2
 matplotlib==3.10.8
 tqdm==4.67.3
+pyarrow==18.1.0
 
 # Detection.
 ultralytics==8.4.23

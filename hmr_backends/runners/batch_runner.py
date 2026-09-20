@@ -74,6 +74,9 @@ class BatchBackendRunner(BaseBackendRunner):
                 pred_cam_t_full = pred_cam_t_full.detach().cpu().numpy()
 
             all_pred_2d = out['pred_keypoints_2d'].detach().cpu().numpy()
+            all_pred_3d = out.get('pred_keypoints_3d')
+            if all_pred_3d is not None:
+                all_pred_3d = all_pred_3d.detach().cpu().numpy()
             if 'bbox' in batch:
                 all_bboxes = batch['bbox'].detach().cpu().numpy()
             else:
@@ -108,6 +111,7 @@ class BatchBackendRunner(BaseBackendRunner):
                     cam_trans=pred_cam_t_full[n],
                     pred_vertices=out['pred_vertices'][n].detach().cpu().numpy(),
                     pred_keypoints_2d=all_pred_2d[n],
+                    pred_joints_3d=None if all_pred_3d is None else all_pred_3d[n, :21],
                     raw_backend_meta={
                         'backend': self.backend_name, 'is_right': is_right_val,
                         **inst.observation_meta,
