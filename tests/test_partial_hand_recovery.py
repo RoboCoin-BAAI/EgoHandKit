@@ -166,3 +166,27 @@ def test_measured_wrist_at_one_metre_is_not_rejected(tmp_path):
     report = attach_partial_hand_anchors([output], tmp_path, 1, max_depth_m=1.0)
     assert report[0]['status'] == 'recovered'
     assert convert_hmr_to_camera_joints(output)[0, 2] == 1.0
+
+
+@pytest.mark.parametrize('side', ['left', 'right'])
+@pytest.mark.parametrize('sensor', [False, True])
+def test_stable_partial_anchor_preserves_all_joint_projections(tmp_path, monkeypatch, side, sensor):
+    output, frames = sample(tmp_path, side)
+    output.pred_joints_3d[:, 2] = np.linspace(0, 0.04, 21)
+    output.pred_keypoints_2d[1:, 0] = np.linspace(10, 80, 20)
+    output.pred_keypoints_2d[1:, 1] = np.linspace(20, 90, 20)
+    samples = ([0.5 + output.pred_joints_3d[i, 2] for i in (5, 9, 13, 17)]
+               if sensor else [None] * 4)
+    mock_depth(monkeypatch, samples)
+    report = attach_partial_hand_anchors([output], tmp_path, 1, stable_wrist_anchor=True)
+    result = convert_hmr_to_camera_joints(output)
+    k = np.asarray(output.raw_backend_meta['depth_anchor']['camera_intrinsics'])
+    projection = result @ k.T
+    np.testing.assert_allclose(projection[:, :2] / projection[:, 2:],
+                               output.pred_keypoints_2d[:, :2], atol=1e-8)
+    np.testing.assert_allclose(result[:, 2] - result[0, 2], output.pred_joints_3d[:, 2])
+    assert result[0, 2] == pytest.approx(0.5 if sensor else 0.7)
+    assert report[0]['source'] == ('visible_mcp_sensor' if sensor else 'mint_frontend_wrist')
+    row = pq.read_table(export_hand_tracking_parquet(
+        frames, _assemble_results([output], frames), tmp_path / 'tracks.parquet')).to_pylist()[0]
+    np.testing.assert_allclose(row[side + '_joints_3d'], result, atol=1e-7)

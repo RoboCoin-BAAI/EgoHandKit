@@ -110,6 +110,12 @@ def convert_hmr_to_camera_joints(
         wrist = np.asarray(recovery.get('wrist_camera'), dtype=np.float64)
         if wrist.shape != (3,) or not np.isfinite(wrist).all():
             return None
+        if recovery.get('wrist_ray_source') == 'hmr':
+            # Borrow Z without moving the other joints off their HMR image rays.
+            return _depth_anchored_joints(
+                joints, getattr(output, 'pred_keypoints_2d', None), float(wrist[2]),
+                metadata.get('depth_anchor', {}).get('camera_intrinsics'),
+            )
         result = joints - joints[:1] + wrist
         return result if np.isfinite(result).all() and np.all(result[:, 2] > 0) else None
     anchor = metadata.get("depth_anchor", {}) if isinstance(metadata, Mapping) else {}

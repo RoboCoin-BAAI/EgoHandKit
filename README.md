@@ -1,5 +1,9 @@
 # EgoHandKit
 
+For development and handoff, read [AGENTS.md](AGENTS.md),
+[PIPELINE_CONTRACT.md](PIPELINE_CONTRACT.md), and
+[PROJECT_MEMORY.md](PROJECT_MEMORY.md) (decisions, known risks, pending validation).
+
 ![EgoHandKit teaser](assets/teaser.gif)
 
 **EgoHandKit** is a toolkit for hand mesh recovery and world-space
@@ -116,6 +120,84 @@ Notes:
 
 ## Quick Start
 
+### Recommended MINT + HaMeR Pipeline
+
+For an existing MINT prediction and registered dataset depth, use the production
+wrapper. It converts the prediction to canonical observations; it does not rerun
+the MINT predictor. Choose a new output directory to preserve previous results.
+
+```bash
+bash scripts/run_without_front.sh mint \
+  /path/to/video.mp4 \
+  /path/to/mint/prediction.npz \
+  /path/to/session/depth \
+  /path/to/new_output
+```
+
+The wrapper activates the `egohandkit` environment and uses HaMeR on GPU 0.
+Its current pipeline is:
+
+```text
+canonical observations -> sensor wrist depth / 1m limit -> motion gate
+-> HMR / partial-hand depth recovery -> HMR-first consistency / duplicate check
+-> endpoint wrist gate -> HMR/MINT selection -> final joint smoother
+-> hand_tracking.parquet -> colored MANO fitting / final render
+```
+
+The wrapper enables `--hmr_stable_wrist_anchor`: assisted recovery preserves
+valid HMR joint image projections using recovered wrist Z plus relative joint Z.
+It does not enable YOLO validation, the strict 8cm/40-degree consistency policy,
+the older 3D-only duplicate veto, or HMR-only temporal smoothing.
+
+Production severe-error thresholds are **0.15m wrist distance / 80 degrees**,
+with **3 consecutive frames** and a sensor-supported MINT reference required.
+Scale ratio is diagnostic in HMR-first mode. The image/depth duplicate gate is
+independent of MINT metric-depth trust. Neither gate guarantees hand presence
+when both predictors lack reliable evidence; there is no general first-person
+pose rejection gate.
+
+Additional `run.py` arguments can be appended to the wrapper command, for example
+`--hmr_severe_wrist_distance_m 0.20 --hmr_severe_vector_angle_deg 90`.
+Use these `hmr_severe_*` options, not the legacy `mint_wrist_*` thresholds, to
+tune production severe-error selection.
+
+For `video.mp4`, inspect:
+
+- `<output>/mint/video_canonical/final/render.mp4`
+- `<output>/mint/video_canonical/final/hand_tracking.parquet`
+- `<output>/mint/video_canonical/stages/45_mint_3d_consistency/mint_3d_consistency.json`
+- `<output>/mint/video_canonical/final/parquet_mesh_fit.json` (rendering failures)
+
+### Recommended Parameters by Stage
+
+This is the current recommended baseline for the wrapper above, without extra
+arguments. **Explicit** means supplied by `scripts/run_without_front.sh`;
+**default** means inherited from `run.py`. Override only for a separate experiment.
+
+| Stage | Enabled options (explicit) | Effective parameters |
+|---|---|---|
+| Input / inference | `--frontend canonical --backend hamer --gpu 0 --force_detect` | `--observations`, `--input`, `--output_root` resolved by wrapper; video FPS read from input; `--batch_size 48` (default) |
+| Sensor depth | `--depth_gate --mint_depth_sensor_anchor --depth_dir ...` | `--depth_max_m 1.0` (explicit); sensor anchoring, not the legacy 8cm MINT/sensor depth comparison |
+| Motion | `--motion_gate` | Defaults: `--motion_center_threshold 0.25`, `--motion_joint_threshold 0.25` (image-diagonal fractions), `--motion_size_ratio 2.0`, `--motion_iou_threshold 0.1`, `--motion_min_votes 2`, `--motion_reacquire_frames 2` |
+| Partial-hand recovery | `--hmr_partial_hand_recovery --hmr_stable_wrist_anchor` | Defaults: `--hmr_partial_min_visible_joints 4`, `--hmr_partial_depth_spread_max_m 0.08`; preserve valid joint projections and relative Z |
+| Severe consistency | `--mint_3d_consistency_gate --hmr_primary_policy` | Defaults: `--hmr_severe_wrist_distance_m 0.15`, `--hmr_severe_vector_angle_deg 80`, `--hmr_error_confirm_frames 3`, `--hmr_reference_depth_tolerance_m 0.08` |
+| Duplicate identity | `--hmr_duplicate_image_gate` | Defaults: `--hmr_duplicate_iou_min 0.4`, `--hmr_duplicate_depth_max_m 0.06`, `--hmr_duplicate_reference_separation 0.5`, `--hmr_duplicate_assignment_margin 0.15`; last two are hand-box-diagonal fractions |
+| Endpoint wrist | `--endpoint_wrist_gate` | `--endpoint_wrist_max_deg 100` (explicit); endpoint-only check, not a general pose filter |
+| Final selected-joint smoothing | `--final_joints_smoother` | `--final_smoother_max_jump_m 0.2` (default); splits smoothing, does not itself delete hands or interpolate missing frames |
+| Export / render | `--hand_tracking_parquet --render_hand_tracking_parquet` | Defaults: `--parquet_mano_fit_steps 200`, `--parquet_mano_fit_max_rmse_m 0.03`; left green / right blue |
+
+Keep `--yolo_check`, `--mint_depth_wrist_only`, `--hmr_duplicate_hand_gate`,
+`--temporal_smoother`, and `--render_frontend_fallback` off for this baseline.
+There is no need to append the table's default-valued options to the wrapper.
+The user reported the projection-fix rerun as broadly satisfactory on 2026-09-21;
+this is a working baseline, not a claim that the known depth/false-hand risks
+in [PROJECT_MEMORY.md](PROJECT_MEMORY.md) have been resolved.
+
+### Other Entry Points
+
+These direct commands demonstrate individual modes, not the full production
+validation configuration above. CLI defaults remain backward compatible.
+
 ```bash
 # Image folder input
 python run.py --input test_data/images/disk --backend hawor --gpu 0
@@ -149,6 +231,10 @@ python run.py --input test_data/images/disk --backend hawor --force_detect
 
 ## Main Options
 
+Defaults below are for direct `run.py` invocation. The production wrapper
+explicitly enables the stages described above. Run `python run.py --help` for
+the complete CLI, including compatibility options.
+
 | Argument | Default | Description |
 |---|---|---|
 | `--input` | required | Video file or image folder |
@@ -159,36 +245,26 @@ python run.py --input test_data/images/disk --backend hawor --force_detect
 | `--output_root` | `test_data/hand_proc` | Root directory for run outputs |
 | `--depth_gate` / `--depth_dir` | disabled | Apply the generic depth veto before HMR; `depth_dir` is the export root containing `fast_foundation/depth_uint16_png` |
 | `--motion_gate` | disabled | Apply the image-space motion veto before HMR |
-| `--yolo_check` | disabled | Deprecated backward-compatible YOLO diagnostic; never validates hand presence or changes HMR input |
-| `--mint_depth_wrist_only` | disabled | Make the depth gate compare MINT joint-0 depth only with sensor depth |
 | `--mint_depth_sensor_anchor` | disabled | Use dataset wrist depth; reject above `--depth_max_m` (production: 1m); unavailable depth keeps frontend 3D without sensor calibration |
-| `--mint_depth_wrist_threshold_m` | `0.08` | Maximum absolute MINT/sensor wrist-depth difference |
 | `--mint_3d_consistency_gate` | disabled | Reject HMR samples inconsistent with available MINT camera-space joints before smoothing |
 | `--hmr_primary_policy` | disabled | Within the consistency stage, only sustained severe errors against sensor-supported MINT veto HMR; enabled in the production script |
 | `--hmr_severe_wrist_distance_m` / `--hmr_severe_vector_angle_deg` | `0.15` / `80` | Severe wrist position / palm-vector discrepancy; scale remains diagnostic in HMR-first mode |
 | `--hmr_error_confirm_frames` | `3` | Consecutive severe frames required within one track fragment; `1` disables confirmation |
 | `--hmr_reference_depth_tolerance_m` | `0.08` | Maximum spread of at least three MINT MCP-derived wrist depths and their disagreement with measured wrist depth |
-| `--hmr_stable_wrist_anchor` | disabled | Partial recovery preserves the HMR wrist image ray, prioritizes visible MCP sensor depth and borrows only MINT Z; production enabled |
-| `--hmr_duplicate_hand_gate` | disabled | Remove wrong-side duplicate with reliable separated MINT references; otherwise pair checks are diagnostic |
+| `--hmr_stable_wrist_anchor` | disabled | Partial recovery preserves valid HMR joint image rays and relative Z, prioritizes visible MCP sensor depth and borrows only MINT Z; production enabled |
 | `--hmr_duplicate_image_gate` | disabled | Detect duplicates using HMR output boxes, independent HMR wrist depths and frontend image positions; production enabled, independent of MINT depth trust |
 | `--hmr_duplicate_iou_min` / `--hmr_duplicate_depth_max_m` | `0.4` / `0.06` | Minimum HMR output bbox IoU and maximum HMR wrist-depth difference in metres |
 | `--hmr_duplicate_reference_separation` / `--hmr_duplicate_assignment_margin` | `0.5` / `0.15` | Reference wrist separation and assignment margin, normalized by mean frontend hand-box diagonal |
-| `--hmr_duplicate_distance_m` / `--hmr_reference_separation_m` / `--hmr_assignment_margin_m` | `0.06` / `0.15` / `0.08` | HMR overlap, minimum frontend separation, and nearest-reference assignment margin, in metres |
-| `--mint_wrist_distance_max_m` | `0.08` | Maximum MINT/HMR wrist distance |
-| `--mint_wrist_vector_angle_max_deg` | `40` | Maximum wrist-to-palm vector angle |
-| `--mint_hand_scale_min` / `--mint_hand_scale_max` | `0.7` / `1.3` | Allowed HMR/MINT hand-scale ratio |
 | `--hand_tracking_parquet` | disabled | Write `final/hand_tracking.parquet` with fixed-size camera-space joint arrays |
 | `--endpoint_wrist_gate` | disabled | Reject extreme raw wrist rotations only at track-fragment endpoints |
-| `--temporal_smoother` | disabled | Smooth camera-space MANO output after the endpoint gate |
 | `--final_joints_smoother` | disabled | Smooth selected HMR/MINT camera joints before Parquet export; production script uses this instead of HMR-only smoothing |
-| `--hmr_partial_hand_recovery` | disabled | Attempt HMR on visible partial hands and retain its shape with sensor/MINT wrist assistance; enabled in the production script |
+| `--hmr_partial_hand_recovery` | disabled | Attempt HMR on visible partial hands with sensor/MINT wrist assistance; stable anchoring preserves projections and relative Z rather than original relative XYZ; production enabled |
 | `--hmr_partial_min_visible_joints` | `4` | Minimum in-frame canonical joints required to attempt HMR on frontend fallback hands |
 | `--hmr_partial_depth_spread_max_m` | `0.08` | Maximum spread of wrist-depth estimates from at least three visible MCP samples |
 | `--final_smoother_max_jump_m` | `0.2` | Restart final smoothing when any joint jumps farther between frames; does not delete hands |
 | `--gpu` | `0` | Physical CUDA GPU index. Sets both `CUDA_VISIBLE_DEVICES` and `EGL_DEVICE_ID` before importing torch, then the process uses remapped `cuda:0`. |
 | `--fps` | `15` | Output FPS for image-folder input |
 | `--render` | `True` | Render mesh overlays |
-| `--render_frontend_fallback` | `False` | Optional legacy orange fallback skeletons; mutually exclusive with Parquet mesh rendering |
 | `--render_hand_tracking_parquet` | `False` | Fit uniform MANO meshes to final Parquet joints; enables export; production script default |
 | `--parquet_mano_fit_steps` | `200` | Independent per-hand MANO fitting iterations for visualization |
 | `--parquet_mano_fit_max_rmse_m` | `0.03` | Maximum joint fit RMSE for rendering; failures recorded in `final/parquet_mesh_fit.json` |
@@ -206,6 +282,22 @@ python run.py --input test_data/images/disk --backend hawor --force_detect
 | `--omega_overlap` | `8` | Overlap frames for Omega chunk alignment |
 | `--omega_force` | `False` | Re-run Omega camera recovery even if cache exists |
 | `--no_omega_world_vis` | `False` | Disable default Omega world fixed-view 2x2 visualization |
+
+### Compatibility and Alternative Policies
+
+These options remain implemented and tested, but are not enabled by the
+production wrapper. They are not required for the recommended command.
+
+| Argument | Default | Scope |
+|---|---|---|
+| `--yolo_check` / `--yolo_check_iou_threshold` | disabled / `0.1` | Optional deprecated YOLO diagnostic only; does not reject hands |
+| `--mint_depth_wrist_only` / `--mint_depth_wrist_threshold_m` | disabled / `0.08` | Compare MINT wrist Z with sensor Z instead of anchoring; wrist-only mode is mutually exclusive with production `--mint_depth_sensor_anchor` |
+| `--mint_wrist_distance_max_m` / `--mint_wrist_vector_angle_max_deg` | `0.08` / `40` | Strict consistency thresholds when HMR-first policy is off; do not tune production severe-error rejection |
+| `--mint_hand_scale_min` / `--mint_hand_scale_max` | `0.7` / `1.3` | Strict-policy scale veto; diagnostic only in HMR-first mode |
+| `--hmr_duplicate_hand_gate` | disabled | Older 3D duplicate veto requiring metric-trusted MINT references; separate from production image/depth gate |
+| `--hmr_duplicate_distance_m` / `--hmr_reference_separation_m` / `--hmr_assignment_margin_m` | `0.06` / `0.15` / `0.08` | Thresholds for the older 3D duplicate policy, not the production image/depth policy |
+| `--temporal_smoother` | disabled | HMR-only MANO smoothing; production uses selected-joint `--final_joints_smoother` instead |
+| `--render_frontend_fallback` | disabled | Legacy orange fallback skeletons; mutually exclusive with Parquet mesh rendering |
 
 ## Key Current Behavior
 

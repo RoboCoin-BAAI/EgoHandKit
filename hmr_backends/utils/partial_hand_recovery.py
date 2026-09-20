@@ -22,10 +22,12 @@ def visible_hand(observation, image_shape, min_joints=4):
 
 def attach_partial_hand_anchors(outputs, depth_dir, frame_count, *, depth_spread_max_m=0.08,
                                 max_depth_m=None, stable_wrist_anchor=False):
-    """Keep HMR relative geometry; recover only its absolute wrist position.
+    """Recover an absolute wrist anchor for partial HMR hands.
 
     Three consistent visible MCP samples can estimate wrist Z by subtracting
     HMR's relative joint Z. Otherwise use the available MINT wrist position.
+    Stable anchoring preserves all valid HMR image rays and relative joint Z;
+    legacy anchoring retains the original relative XYZ geometry.
     These assisted outputs are not independent evidence for a MINT/HMR gate.
     """
     import cv2

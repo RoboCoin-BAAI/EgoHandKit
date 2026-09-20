@@ -43,8 +43,11 @@ The existing 1m sensor limit, motion and endpoint gates retain their behavior.
 With `--hmr_stable_wrist_anchor`, partial recovery prefers the HMR sensor wrist,
 then consistent visible HMR MCP depth, then supported MINT sensor depth, then
 original uncalibrated MINT depth. All auxiliary anchors supply only Z: XY is
-back-projected along the HMR wrist ray, even outside the image. This avoids
-transplanting a differently projected MINT wrist into a calibrated HMR track.
+back-projected along the HMR wrist ray, even outside the image. Every other
+valid projected joint is also back-projected along its own HMR ray using
+the recovered wrist Z plus its original HMR relative Z. This preserves image
+alignment, not the original relative XYZ shape. It avoids transplanting a
+differently projected MINT wrist or shifting visible fingers during recovery.
 The older full-position anchoring remains available when the flag is off.
 
 Pair diagnostics report wrist separation differences, nearest-reference
