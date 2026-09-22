@@ -150,6 +150,8 @@ def build_arg_parser():
                         help='Reject only raw backend segment endpoints with an extreme wrist jump')
     parser.add_argument('--endpoint_wrist_max_deg', type=float, default=100.0,
                         help='Reject only raw backend segment endpoints whose wrist rotation jump to the adjacent frame exceeds this angle in degrees')
+    parser.add_argument('--orientation_bucket_gate', action='store_true', default=False,
+                        help='Reject HMR hands whose wrist-to-middle-MCP 8-way camera orientation bucket differs from MINT')
     parser.add_argument('--smoother_q', type=float, default=0.6,
                         help='Temporal smoother process-noise scale')
     parser.add_argument('--smoother_r', type=float, default=0.6,
@@ -632,6 +634,7 @@ def main():
         {"name": "mint_3d_consistency_gate", "enabled": bool(args.mint_3d_consistency_gate),
          "artifact": "stages/45_mint_3d_consistency/mint_3d_consistency.json" if args.mint_3d_consistency_gate else None},
         {"name": "endpoint_wrist_gate", "enabled": bool(args.endpoint_wrist_gate), "artifact": "stages/50_endpoint_wrist_gate/outputs.pkl" if args.endpoint_wrist_gate else None},
+        {"name": "orientation_bucket_gate", "enabled": bool(args.orientation_bucket_gate), "artifact": "stages/55_orientation_bucket_gate/outputs.pkl" if args.orientation_bucket_gate else None},
         {"name": "temporal_smoother", "enabled": bool(args.temporal_smoother), "artifact": "stages/60_smoother/outputs.pkl" if args.temporal_smoother else None},
     ])
     manifest["final_artifacts"] = {"results": "final/results.pkl", "summary": "final/summary.json",

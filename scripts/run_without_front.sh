@@ -186,6 +186,7 @@ python run.py \
     --hmr_stable_wrist_anchor \
     --endpoint_wrist_gate \
     --endpoint_wrist_max_deg 100 \
+    --orientation_bucket_gate \
     --final_joints_smoother \
     --hand_tracking_parquet \
     --render_hand_tracking_parquet \

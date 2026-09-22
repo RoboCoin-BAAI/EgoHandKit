@@ -19,6 +19,7 @@ from hmr_backends.runners.factory import build_runner
 from hmr_backends.utils.render_policy import build_left_hand_policy, COLOR_GREEN, COLOR_BLUE
 from hmr_backends.utils.mint_style_smoother import smooth_hand_sequence
 from hmr_backends.utils.endpoint_wrist_gate import apply_endpoint_wrist_gate
+from hmr_backends.utils.final_orientation_gate import apply_orientation_bucket_gate
 from hmr_backends.utils.mint_3d_consistency import (
     apply_mint_3d_consistency_gate,
     attach_depth_anchors,
@@ -577,6 +578,10 @@ def run_mesh_recovery(cleaned_data, backend_bundle, renderer, args, out_dir, fps
             Path(out_dir).mkdir(parents=True, exist_ok=True)
             artifacts = ArtifactStore(out_dir)
             artifacts.write_json(artifacts.stage_dir("50_endpoint_wrist_gate") / "report.json", pose_report)
+        if getattr(args, 'orientation_bucket_gate', False):
+            _, orientation_report = apply_orientation_bucket_gate([])
+            artifacts = ArtifactStore(out_dir)
+            artifacts.write_json(artifacts.stage_dir("55_orientation_bucket_gate") / "report.json", orientation_report)
         _, cleaned_data = _recover_partial_outputs([], cleaned_data, args, out_dir)
         results = _assemble_results([], cleaned_data)
         _export_hand_tracking_if_enabled(cleaned_data, results, args, out_dir)
@@ -624,6 +629,24 @@ def run_mesh_recovery(cleaned_data, backend_bundle, renderer, args, out_dir, fps
         Path(out_dir).mkdir(parents=True, exist_ok=True)
         artifacts.write_pickle(artifacts.stage_dir("50_endpoint_wrist_gate") / "outputs.pkl", serialize_backend_outputs(raw_outputs))
         artifacts.write_json(artifacts.stage_dir("50_endpoint_wrist_gate") / "report.json", pose_report)
+    if getattr(args, 'orientation_bucket_gate', False):
+        checked_outputs = raw_outputs
+        raw_outputs, orientation_report = apply_orientation_bucket_gate(checked_outputs)
+        orientation_stage = artifacts.stage_dir("55_orientation_bucket_gate")
+        artifacts.write_pickle(
+            orientation_stage / "checked_outputs.pkl",
+            serialize_backend_outputs(checked_outputs),
+        )
+        artifacts.write_pickle(
+            orientation_stage / "outputs.pkl",
+            serialize_backend_outputs(raw_outputs),
+        )
+        artifacts.write_json(orientation_stage / "report.json", orientation_report)
+        print(
+            "Orientation bucket gate: "
+            f"kept {len(raw_outputs)}/{len(checked_outputs)} HMR hands "
+            f"(rejected {orientation_report['counts']['rejected']})"
+        )
     if getattr(args, 'temporal_smoother', False):
         _smooth_raw_outputs(raw_outputs, backend_bundle, device, args)
         if (getattr(args, 'mint_3d_consistency_gate', False)
