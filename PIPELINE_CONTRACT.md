@@ -120,13 +120,20 @@ metadata, including original strict-policy reasons and reference quality.
 ## Existing Stage Semantics
 
 For production MINT runs, `--mint_depth_sensor_anchor` samples registered
-dataset depth at the projected MINT wrist. A valid sample becomes the wrist's
-absolute depth anchor; disagreement with MINT's original absolute Z is kept as
-diagnostic data and does not reject the observation. Sensor wrist depth greater
-than `--depth_max_m` rejects the observation without HMR or MINT fallback (the
-production script sets 1.0 metres; equality is accepted). When sensor depth is
-unavailable, including a wrist outside the image, the observation is marked
-`frontend_fallback`, is not
+dataset depth at the projected MINT wrist. With
+`--wrist_surface_depth_compensation`, the sampled value is treated as visible
+surface depth, not the internal wrist joint center. EgoHandKit estimates a
+palm-orientation-dependent positive camera-Z offset between
+`--wrist_surface_offset_min_m` and `--wrist_surface_offset_max_m` (defaults
+0.015-0.030m; palm/back-facing views use the smaller end and edge-on views use
+the larger end), adds it to the sampled depth, and records both the raw surface
+depth and compensated center depth in diagnostics. The compensated depth becomes
+the wrist's absolute depth anchor; disagreement with MINT's original absolute Z
+is kept as diagnostic data and does not reject the observation. Compensated
+sensor wrist depth greater than `--depth_max_m` rejects the observation without
+HMR or MINT fallback (the production script sets 1.0 metres; equality is
+accepted). When sensor depth is unavailable, including a wrist outside the
+image, the observation is marked `frontend_fallback`, is not
 sent to HMR, and its original frontend 3D is retained in Parquet with source
 `mint_frontend_fallback`. The older `--mint_depth_wrist_only` comparison mode
 remains available for compatibility.
@@ -192,8 +199,9 @@ The resulting joints are written to Parquet and used by the mesh renderer;
 The HMR-only smoother remains independently available for compatibility.
 
 Before that comparison, both sources are anchored independently to registered
-sensor depth at their own projected wrist pixel. Their remaining joint depths
-come from root-relative MANO geometry, and each joint's image projection is
+sensor depth at their own projected wrist pixel, using the same optional
+surface-to-center compensation when enabled. Their remaining joint depths come
+from root-relative MANO geometry, and each joint's image projection is
 back-projected with the declared camera intrinsics. HaMeR's virtual
 weak-perspective `cam_trans.z` is used for rendering only and is never treated
 as metric depth. The same sensor-anchored representation is written to Parquet.

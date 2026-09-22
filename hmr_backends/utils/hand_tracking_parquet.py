@@ -14,6 +14,7 @@ import pyarrow.parquet as pq
 
 from hmr_backends.utils.mint_3d_consistency import convert_mint_to_camera_joints
 from observation_frontend.depth_gate import (
+    compensate_wrist_surface_depth,
     depth_for_image_point,
     resolve_depth_camera_intrinsics,
     resolve_depth_frames,
@@ -71,6 +72,10 @@ def _mint_hands(
     frame: Mapping[str, Any],
     depth_path: Path | None = None,
     camera_intrinsics: Any = None,
+    *,
+    wrist_surface_compensation: bool = False,
+    wrist_surface_offset_min_m: float = 0.015,
+    wrist_surface_offset_max_m: float = 0.030,
 ) -> dict[str, tuple[np.ndarray, float | None, str]]:
     hands = {}
     image_shape = None
@@ -91,6 +96,13 @@ def _mint_hands(
                     and keypoints[0, 2] > 0):
                 wrist_depth = depth_for_image_point(
                     depth_path, keypoints[0, :2], image_shape
+                )
+                wrist_depth, _ = compensate_wrist_surface_depth(
+                    wrist_depth,
+                    observation.get("meta", {}).get("joints_3d_camera"),
+                    enabled=wrist_surface_compensation,
+                    min_offset_m=wrist_surface_offset_min_m,
+                    max_offset_m=wrist_surface_offset_max_m,
                 )
         if wrist_depth is not None:
             joints = convert_mint_to_camera_joints(
@@ -119,6 +131,9 @@ def iter_selected_hands(
     *,
     depth_dir: str | Path | None = None,
     expected_reference_camera: str | None = None,
+    wrist_surface_compensation: bool = False,
+    wrist_surface_offset_min_m: float = 0.015,
+    wrist_surface_offset_max_m: float = 0.030,
 ):
     """Select final hands consistently for export and fallback visualization."""
     depth_paths = resolve_depth_frames(depth_dir, len(frames)) if depth_dir is not None else None
@@ -139,7 +154,12 @@ def iter_selected_hands(
             frame_intrinsics = scale_camera_intrinsics(
                 frame_intrinsics, depth_image.shape[:2], image.shape[:2]
             )
-        mint = _mint_hands(frame, depth_path, frame_intrinsics)
+        mint = _mint_hands(
+            frame, depth_path, frame_intrinsics,
+            wrist_surface_compensation=wrist_surface_compensation,
+            wrist_surface_offset_min_m=wrist_surface_offset_min_m,
+            wrist_surface_offset_max_m=wrist_surface_offset_max_m,
+        )
         selected = dict(mint)
         selected.update(_hmr_hands(results.get(frame["img_path"], {})))
         yield frame, selected
@@ -152,6 +172,9 @@ def export_hand_tracking_parquet(
     *,
     depth_dir: str | Path | None = None,
     expected_reference_camera: str | None = None,
+    wrist_surface_compensation: bool = False,
+    wrist_surface_offset_min_m: float = 0.015,
+    wrist_surface_offset_max_m: float = 0.030,
     final_smoother: bool = False,
     smoother_q: float = 0.6,
     smoother_r: float = 0.6,
@@ -164,6 +187,9 @@ def export_hand_tracking_parquet(
     for frame, selected in iter_selected_hands(
         frames, results, depth_dir=depth_dir,
         expected_reference_camera=expected_reference_camera,
+        wrist_surface_compensation=wrist_surface_compensation,
+        wrist_surface_offset_min_m=wrist_surface_offset_min_m,
+        wrist_surface_offset_max_m=wrist_surface_offset_max_m,
     ):
         sources = {selected[side][2] for side in ("left", "right") if side in selected}
         source = next(iter(sources)) if len(sources) == 1 else "mixed" if sources else "none"

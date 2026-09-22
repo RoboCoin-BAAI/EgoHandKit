@@ -138,7 +138,7 @@ The wrapper activates the `egohandkit` environment and uses HaMeR on GPU 0.
 Its current pipeline is:
 
 ```text
-canonical observations -> sensor wrist depth / 1m limit -> motion gate
+canonical observations -> sensor wrist depth + wrist-surface compensation / 1m limit -> motion gate
 -> HMR / partial-hand depth recovery -> HMR-first consistency / duplicate check
 -> endpoint wrist gate -> HMR/MINT selection -> final joint smoother
 -> hand_tracking.parquet -> colored MANO fitting / final render
@@ -177,7 +177,7 @@ arguments. **Explicit** means supplied by `scripts/run_without_front.sh`;
 | Stage | Enabled options (explicit) | Effective parameters |
 |---|---|---|
 | Input / inference | `--frontend canonical --backend hamer --gpu 0 --force_detect` | `--observations`, `--input`, `--output_root` resolved by wrapper; video FPS read from input; `--batch_size 48` (default) |
-| Sensor depth | `--depth_gate --mint_depth_sensor_anchor --depth_dir ...` | `--depth_max_m 1.0` (explicit); sensor anchoring, not the legacy 8cm MINT/sensor depth comparison |
+| Sensor depth | `--depth_gate --mint_depth_sensor_anchor --wrist_surface_depth_compensation --depth_dir ...` | `--depth_max_m 1.0` (explicit); sensor anchoring, not the legacy 8cm MINT/sensor depth comparison. Sampled wrist depth is treated as visible surface depth and shifted to an estimated joint-center depth by an orientation-aware 0.015-0.030m offset: palm/back-facing views use the smaller end, edge-on views use the larger end |
 | Motion | `--motion_gate` | Defaults: `--motion_center_threshold 0.25`, `--motion_joint_threshold 0.25` (image-diagonal fractions), `--motion_size_ratio 2.0`, `--motion_iou_threshold 0.1`, `--motion_min_votes 2`, `--motion_reacquire_frames 2` |
 | Partial-hand recovery | `--hmr_partial_hand_recovery --hmr_stable_wrist_anchor` | Defaults: `--hmr_partial_min_visible_joints 4`, `--hmr_partial_depth_spread_max_m 0.08`; preserve valid joint projections and relative Z |
 | Severe consistency | `--mint_3d_consistency_gate --hmr_primary_policy` | Defaults: `--hmr_severe_wrist_distance_m 0.15`, `--hmr_severe_vector_angle_deg 80`, `--hmr_error_confirm_frames 3`, `--hmr_reference_depth_tolerance_m 0.08` |

@@ -180,6 +180,12 @@ def build_arg_parser():
                         help='Anchor to sensor wrist depth; reject beyond depth_max_m, retain frontend when depth is unavailable')
     parser.add_argument('--mint_depth_wrist_threshold_m', type=float, default=0.08,
                         help='Maximum absolute MINT/sensor wrist-depth difference in metres')
+    parser.add_argument('--wrist_surface_depth_compensation', action='store_true', default=False,
+                        help='Treat sampled wrist depth as visible surface depth and add an orientation-aware offset before using it as joint-center depth')
+    parser.add_argument('--wrist_surface_offset_min_m', type=float, default=0.015,
+                        help='Minimum surface-to-wrist-center depth offset for palm/back-facing views')
+    parser.add_argument('--wrist_surface_offset_max_m', type=float, default=0.030,
+                        help='Maximum surface-to-wrist-center depth offset for edge-on views')
     parser.add_argument('--motion_gate', action='store_true', default=False,
                         help='Reject implausible image-space jumps before HaMeR')
     parser.add_argument('--motion_center_threshold', type=float, default=0.25,
@@ -344,6 +350,9 @@ def validate_cli_args(parser, args):
         parser.error('--mint_3d_consistency_gate and --hand_tracking_parquet require --depth_dir')
     if args.mint_depth_wrist_threshold_m <= 0:
         parser.error('--mint_depth_wrist_threshold_m must be positive')
+    if (args.wrist_surface_offset_min_m < 0
+            or args.wrist_surface_offset_max_m < args.wrist_surface_offset_min_m):
+        parser.error('--wrist_surface_offset_* must satisfy 0 <= min <= max')
     if args.motion_center_threshold <= 0 or args.motion_size_ratio < 1:
         parser.error('--motion_center_threshold must be positive and --motion_size_ratio must be >= 1')
     if not 0 <= args.motion_iou_threshold <= 1 or args.motion_joint_threshold <= 0:
@@ -546,7 +555,10 @@ def main():
                 max_bad_frames=args.depth_max_bad_frames,
                 wrist_only=(args.mint_depth_wrist_only or args.mint_depth_sensor_anchor),
                 wrist_threshold_m=args.mint_depth_wrist_threshold_m,
-                sensor_anchor=args.mint_depth_sensor_anchor)
+                sensor_anchor=args.mint_depth_sensor_anchor,
+                wrist_surface_compensation=args.wrist_surface_depth_compensation,
+                wrist_surface_offset_min_m=args.wrist_surface_offset_min_m,
+                wrist_surface_offset_max_m=args.wrist_surface_offset_max_m)
             pipeline_sequence = {**pipeline_sequence, "frames": gated_frames}
             validate_observation_sequence(pipeline_sequence)
             depth_stage = artifacts.stage_dir("10_depth_gate")

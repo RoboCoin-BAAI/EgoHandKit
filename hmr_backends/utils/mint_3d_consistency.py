@@ -11,6 +11,7 @@ import cv2
 import numpy as np
 
 from observation_frontend.depth_gate import (
+    compensate_wrist_surface_depth,
     depth_for_image_point,
     resolve_depth_camera_intrinsics,
     resolve_depth_frames,
@@ -152,7 +153,10 @@ def _valid_wrist_pixel(keypoints_2d: Any) -> np.ndarray | None:
 def attach_depth_anchors(outputs: Iterable[Any], depth_dir: str | Path,
                          frame_count: int, *, unit_scale: float = 0.001,
                          expected_reference_camera: str | None = None,
-                         collect_reference_quality: bool = False) -> None:
+                         collect_reference_quality: bool = False,
+                         wrist_surface_compensation: bool = False,
+                         wrist_surface_offset_min_m: float = 0.015,
+                         wrist_surface_offset_max_m: float = 0.030) -> None:
     """Attach sensor-wrist anchors for both MINT and HMR projected wrists."""
     rows = list(outputs)
     if not rows:
@@ -199,11 +203,33 @@ def attach_depth_anchors(outputs: Iterable[Any], depth_dir: str | Path,
             depth_for_image_point(depth_path, hmr_pixel, image_shape, unit_scale=unit_scale)
             if hmr_pixel is not None else None
         )
+        mint_surface_depth = mint_depth
+        hmr_surface_depth = hmr_depth
+        mint_depth, mint_compensation = compensate_wrist_surface_depth(
+            mint_surface_depth,
+            camera_joints_from_observation(metadata),
+            enabled=wrist_surface_compensation,
+            min_offset_m=wrist_surface_offset_min_m,
+            max_offset_m=wrist_surface_offset_max_m,
+        )
+        hmr_depth, hmr_compensation = compensate_wrist_surface_depth(
+            hmr_surface_depth,
+            _joints(getattr(output, "pred_joints_3d", None)),
+            enabled=wrist_surface_compensation,
+            min_offset_m=wrist_surface_offset_min_m,
+            max_offset_m=wrist_surface_offset_max_m,
+        )
         metadata["depth_anchor"] = {
             "camera_intrinsics": intrinsics.tolist() if intrinsics is not None else None,
             "camera_intrinsics_source": intrinsics_source,
             "mint_wrist_depth_m": mint_depth,
             "hmr_wrist_depth_m": hmr_depth,
+            "mint_wrist_surface_depth_m": mint_surface_depth,
+            "hmr_wrist_surface_depth_m": hmr_surface_depth,
+            "mint_wrist_surface_offset_m": mint_compensation["offset_m"],
+            "hmr_wrist_surface_offset_m": hmr_compensation["offset_m"],
+            "mint_wrist_surface_compensation": mint_compensation,
+            "hmr_wrist_surface_compensation": hmr_compensation,
             "mint_wrist_pixel": mint_pixel.tolist() if mint_pixel is not None else None,
             "hmr_wrist_pixel": hmr_pixel.tolist() if hmr_pixel is not None else None,
             "source": "registered_depth_sensor",
@@ -219,6 +245,13 @@ def attach_depth_anchors(outputs: Iterable[Any], depth_dir: str | Path,
                     sample = depth_for_image_point(
                         depth_path, points[index, :2], image_shape, unit_scale=unit_scale)
                     if sample is not None:
+                        sample, _ = compensate_wrist_surface_depth(
+                            sample,
+                            mint,
+                            enabled=wrist_surface_compensation,
+                            min_offset_m=wrist_surface_offset_min_m,
+                            max_offset_m=wrist_surface_offset_max_m,
+                        )
                         estimates.append(float(sample - (mint[index, 2] - mint[0, 2])))
             metadata['depth_anchor']['mint_mcp_wrist_depths_m'] = estimates
         output.camera_joints_3d = convert_hmr_to_camera_joints(output)

@@ -14,7 +14,7 @@ Last updated: 2026-09-21.
 ## Agreed Production Strategy
 
 ```text
-canonical -> sensor wrist depth / existing 1m limit -> motion gate
+canonical -> sensor wrist depth plus wrist-surface compensation / existing 1m limit -> motion gate
 -> HMR inference / optional partial-hand depth recovery
 -> image/depth duplicate identity check + HMR-first MINT consistency
 -> endpoint wrist gate -> HMR/MINT selection -> final joint smoother
@@ -36,6 +36,12 @@ smoothing, Parquet export, and Parquet rendering. Direct `run.py` defaults diffe
   and excessive jumps split smoothing; source changes alone do not.
 - Retained CLI alternatives are not dead code. Do not delete them merely because
   the wrapper does not enable them.
+- As of the wrist-surface update, the production wrapper enables
+  `--wrist_surface_depth_compensation`. Registered depth sampled at the wrist
+  pixel is treated as visible surface depth and converted to joint-center depth
+  with an orientation-aware positive Z offset, defaulting to 0.015-0.030m:
+  palm/back-facing views use the smaller end and edge-on views use the larger
+  end. Raw surface depth, offset, and compensated depth are diagnostic fields.
 
 ## Latest Confirmed Fix: Partial Recovery Projection
 

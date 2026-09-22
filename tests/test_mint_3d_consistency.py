@@ -4,6 +4,7 @@ import json
 
 import cv2
 import numpy as np
+import pytest
 import torch
 import mesh_recovery
 
@@ -161,6 +162,35 @@ def test_joint_converters_return_camera_coordinates():
         ),
         joints,
     )
+
+
+def test_depth_anchors_can_compensate_surface_depth_to_wrist_center(tmp_path):
+    depth_dir = tmp_path / "depth" / "fast_foundation" / "depth_uint16_png"
+    depth_dir.mkdir(parents=True)
+    depth = np.full((40, 60), 500, dtype=np.uint16)
+    assert cv2.imwrite(str(depth_dir / "frame_000000_depth_mm.png"), depth)
+    image_path = tmp_path / "frame.jpg"
+    assert cv2.imwrite(str(image_path), np.zeros((40, 60, 3), dtype=np.uint8))
+    joints = _joints()
+    output = _output(joints, joints)
+    output.frame_idx = 0
+    output.img_path = str(image_path)
+    output.raw_backend_meta["keypoints_2d"][:, :2] = [20.0, 20.0]
+    output.pred_keypoints_2d[:, :2] = [20.0, 20.0]
+
+    attach_depth_anchors(
+        [output], tmp_path / "depth", 1, wrist_surface_compensation=True,
+        wrist_surface_offset_min_m=0.02, wrist_surface_offset_max_m=0.02,
+    )
+
+    anchor = output.raw_backend_meta["depth_anchor"]
+    assert anchor["mint_wrist_surface_depth_m"] == pytest.approx(0.5)
+    assert anchor["hmr_wrist_surface_depth_m"] == pytest.approx(0.5)
+    assert anchor["mint_wrist_depth_m"] == pytest.approx(0.52)
+    assert anchor["hmr_wrist_depth_m"] == pytest.approx(0.52)
+    assert anchor["mint_wrist_surface_offset_m"] == pytest.approx(0.02)
+    assert anchor["hmr_wrist_surface_offset_m"] == pytest.approx(0.02)
+    assert output.camera_joints_3d[0, 2] == pytest.approx(0.52)
 
 
 def test_legacy_hmr_conversion_is_preserved_without_sensor_anchor():

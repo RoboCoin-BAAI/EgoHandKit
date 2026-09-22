@@ -157,6 +157,70 @@ def _mint_wrist_depth(observation: dict[str, Any]) -> float | None:
     return float(joints[0, 2]) if joints is not None else None
 
 
+def wrist_surface_depth_offset(
+    joints: Any,
+    *,
+    min_offset_m: float = 0.015,
+    max_offset_m: float = 0.030,
+) -> tuple[float, dict[str, Any]]:
+    """Estimate a conservative surface-to-wrist-center depth offset.
+
+    Registered depth measures the first visible wrist/hand surface along the
+    camera ray, while OpenPose/MANO wrist is an internal joint. Broad palm/back
+    views need a smaller positive Z offset than edge-on views.
+    """
+    if min_offset_m < 0 or max_offset_m < min_offset_m:
+        raise ValueError("wrist surface offset range must satisfy 0 <= min <= max")
+    array = np.asarray(joints, dtype=np.float64)
+    info = {
+        "enabled": False,
+        "min_offset_m": float(min_offset_m),
+        "max_offset_m": float(max_offset_m),
+        "facing_score": None,
+        "offset_m": 0.0,
+    }
+    if array.shape != (21, 3) or not np.isfinite(array[[0, 5, 9, 17]]).all():
+        info["reason"] = "invalid_joints"
+        return 0.0, info
+    side_dir = array[5] - array[17]
+    forward_dir = array[9] - array[0]
+    normal = np.cross(side_dir, forward_dir)
+    norm = float(np.linalg.norm(normal))
+    if norm <= 1e-8:
+        info["reason"] = "degenerate_palm"
+        return 0.0, info
+    normal = normal / norm
+    camera_surface_axis = np.array([0.0, 0.0, -1.0], dtype=np.float64)
+    facing_score = float(abs(np.dot(normal, camera_surface_axis)))
+    facing_score = float(np.clip(facing_score, 0.0, 1.0))
+    edge_score = 1.0 - facing_score
+    offset = float(min_offset_m + edge_score * (max_offset_m - min_offset_m))
+    info.update(enabled=True, facing_score=facing_score, offset_m=offset)
+    return offset, info
+
+
+def compensate_wrist_surface_depth(
+    depth_m: float | None,
+    joints: Any,
+    *,
+    enabled: bool = False,
+    min_offset_m: float = 0.015,
+    max_offset_m: float = 0.030,
+) -> tuple[float | None, dict[str, Any]]:
+    """Return wrist-center depth from a sampled wrist-surface depth."""
+    if depth_m is None:
+        return None, {"enabled": bool(enabled), "surface_depth_m": None,
+                      "offset_m": 0.0, "center_depth_m": None}
+    if not enabled:
+        return float(depth_m), {"enabled": False, "surface_depth_m": float(depth_m),
+                                "offset_m": 0.0, "center_depth_m": float(depth_m)}
+    offset, info = wrist_surface_depth_offset(
+        joints, min_offset_m=min_offset_m, max_offset_m=max_offset_m
+    )
+    center = float(depth_m) + float(offset)
+    return center, {**info, "surface_depth_m": float(depth_m), "center_depth_m": center}
+
+
 def apply_depth_gate(
     frames: list[dict[str, Any]],
     image_paths: list[str | Path],
@@ -172,6 +236,9 @@ def apply_depth_gate(
     wrist_only: bool = False,
     wrist_threshold_m: float = 0.08,
     sensor_anchor: bool = False,
+    wrist_surface_compensation: bool = False,
+    wrist_surface_offset_min_m: float = 0.015,
+    wrist_surface_offset_max_m: float = 0.030,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Reject depth outliers and restart fragments after invalid observations."""
     if not (0 < min_depth_m < max_depth_m):
@@ -228,11 +295,25 @@ def apply_depth_gate(
                     if wrist_in_image else None
                 )
                 mint_wrist_depth_m = _mint_wrist_depth(observation)
+                depth_surface_m = depth_m
+                depth_compensation = {"enabled": False, "surface_depth_m": depth_m,
+                                      "offset_m": 0.0, "center_depth_m": depth_m}
+                if sensor_anchor:
+                    depth_m, depth_compensation = compensate_wrist_surface_depth(
+                        depth_surface_m,
+                        camera_joints_from_observation(observation),
+                        enabled=wrist_surface_compensation,
+                        min_offset_m=wrist_surface_offset_min_m,
+                        max_offset_m=wrist_surface_offset_max_m,
+                    )
                 frontend_fallback = bool(sensor_anchor and depth_m is None)
             else:
                 depth_m = _depth_for_bbox(
                     depth_path, observation["bbox_xyxy"], image.shape[:2], unit_scale=unit_scale
                 )
+                depth_surface_m = depth_m
+                depth_compensation = {"enabled": False, "surface_depth_m": depth_m,
+                                      "offset_m": 0.0, "center_depth_m": depth_m}
             reference = (
                 float(np.median(hand_state["history"]))
                 if hand_state["history"] and not wrist_only else None
@@ -276,6 +357,9 @@ def apply_depth_gate(
                 if wrist_only:
                     meta.update({"depth_joint_used": "wrist", "mint_wrist_depth_m": mint_wrist_depth_m,
                                  "sensor_wrist_depth_m": depth_m,
+                                 "sensor_wrist_surface_depth_m": depth_surface_m,
+                                 "wrist_surface_offset_m": depth_compensation["offset_m"],
+                                 "wrist_surface_compensation": depth_compensation,
                                  "depth_difference_m": depth_difference_m,
                                  "depth_gate_mode": (
                                      "frontend_fallback" if frontend_fallback
@@ -303,6 +387,9 @@ def apply_depth_gate(
                     "depth_joint_used": "wrist" if wrist_only else "bbox",
                     "mint_wrist_depth_m": mint_wrist_depth_m,
                     "sensor_wrist_depth_m": depth_m,
+                    "sensor_wrist_surface_depth_m": depth_surface_m,
+                    "wrist_surface_offset_m": depth_compensation["offset_m"],
+                    "wrist_surface_compensation": depth_compensation,
                     "depth_difference_m": depth_difference_m,
                     "depth_gate_mode": (
                         "frontend_fallback" if frontend_fallback
@@ -318,6 +405,9 @@ def apply_depth_gate(
                 "depth_joint_used": "wrist" if wrist_only else "bbox",
                 "mint_wrist_depth_m": mint_wrist_depth_m,
                 "sensor_wrist_depth_m": depth_m,
+                "sensor_wrist_surface_depth_m": depth_surface_m,
+                "wrist_surface_offset_m": depth_compensation["offset_m"],
+                "wrist_surface_compensation": depth_compensation,
                 "depth_difference_m": depth_difference_m,
                 "depth_gate_mode": (
                     "frontend_fallback" if frontend_fallback

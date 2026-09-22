@@ -2,7 +2,11 @@
 
 import numpy as np
 
-from observation_frontend.depth_gate import depth_for_image_point, resolve_depth_frames
+from observation_frontend.depth_gate import (
+    compensate_wrist_surface_depth,
+    depth_for_image_point,
+    resolve_depth_frames,
+)
 from hmr_backends.utils.mint_3d_consistency import convert_mint_to_camera_joints
 
 
@@ -21,7 +25,10 @@ def visible_hand(observation, image_shape, min_joints=4):
 
 
 def attach_partial_hand_anchors(outputs, depth_dir, frame_count, *, depth_spread_max_m=0.08,
-                                max_depth_m=None, stable_wrist_anchor=False):
+                                max_depth_m=None, stable_wrist_anchor=False,
+                                wrist_surface_compensation=False,
+                                wrist_surface_offset_min_m=0.015,
+                                wrist_surface_offset_max_m=0.030):
     """Recover an absolute wrist anchor for partial HMR hands.
 
     Three consistent visible MCP samples can estimate wrist Z by subtracting
@@ -79,15 +86,30 @@ def attach_partial_hand_anchors(outputs, depth_dir, frame_count, *, depth_spread
                     raise ValueError(f'Cannot read partial hand image: {output.img_path}')
                 shapes[output.img_path] = image.shape[:2]
             estimates, indices = [], []
+            sample_compensation = {
+                'enabled': bool(wrist_surface_compensation),
+                'surface_depth_m': None,
+                'offset_m': 0.0,
+                'center_depth_m': None,
+            }
             for index in (5, 9, 13, 17):
                 if not np.isfinite(points[index]).all() or points[index, 2] <= 0:
                     continue
                 sample = depth_for_image_point(depth_paths[int(output.frame_idx)],
                                                points[index, :2], shapes[output.img_path])
+                sample, sample_compensation = compensate_wrist_surface_depth(
+                    sample,
+                    joints,
+                    enabled=wrist_surface_compensation,
+                    min_offset_m=wrist_surface_offset_min_m,
+                    max_offset_m=wrist_surface_offset_max_m,
+                )
                 if sample is not None and sample - relative[index, 2] > 0:
                     estimates.append(float(sample - relative[index, 2]))
                     indices.append(index)
             diagnostic.update(visible_depth_joint_ids=indices, estimated_wrist_depths_m=estimates)
+            if wrist_surface_compensation:
+                diagnostic['wrist_surface_compensation'] = sample_compensation
             if len(estimates) >= 3 and np.ptp(estimates) <= depth_spread_max_m:
                 depth = float(np.median(estimates))
                 diagnostic.update(source='visible_mcp_sensor', sensor_calibrated=True)

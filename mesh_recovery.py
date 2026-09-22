@@ -457,6 +457,9 @@ def _export_hand_tracking_if_enabled(cleaned_data, results, args, out_dir):
         cleaned_data, results, Path(out_dir) / "final" / "hand_tracking.parquet",
         depth_dir=args.depth_dir,
         expected_reference_camera=infer_camera_side(getattr(args, "input", None)),
+        wrist_surface_compensation=getattr(args, 'wrist_surface_depth_compensation', False),
+        wrist_surface_offset_min_m=getattr(args, 'wrist_surface_offset_min_m', 0.015),
+        wrist_surface_offset_max_m=getattr(args, 'wrist_surface_offset_max_m', 0.030),
         final_smoother=getattr(args, 'final_joints_smoother', False),
         smoother_q=getattr(args, 'smoother_q', 0.6),
         smoother_r=getattr(args, 'smoother_r', 0.6),
@@ -474,6 +477,9 @@ def _recover_partial_outputs(raw_outputs, cleaned_data, args, out_dir,
         depth_spread_max_m=args.hmr_partial_depth_spread_max_m,
         max_depth_m=args.depth_max_m if getattr(args, 'depth_gate', False) else None,
         stable_wrist_anchor=getattr(args, 'hmr_stable_wrist_anchor', False),
+        wrist_surface_compensation=getattr(args, 'wrist_surface_depth_compensation', False),
+        wrist_surface_offset_min_m=getattr(args, 'wrist_surface_offset_min_m', 0.015),
+        wrist_surface_offset_max_m=getattr(args, 'wrist_surface_offset_max_m', 0.030),
     )
     excluded = {(o.frame_idx, o.raw_backend_meta.get('physical_track_id'),
                  o.raw_backend_meta.get('handedness', o.hand_side)) for o in raw_outputs
@@ -596,6 +602,9 @@ def run_mesh_recovery(cleaned_data, backend_bundle, renderer, args, out_dir, fps
             raw_outputs, args.depth_dir, len(cleaned_data),
             expected_reference_camera=infer_camera_side(getattr(args, 'input', None)),
             collect_reference_quality=_needs_reference_quality(args),
+            wrist_surface_compensation=getattr(args, 'wrist_surface_depth_compensation', False),
+            wrist_surface_offset_min_m=getattr(args, 'wrist_surface_offset_min_m', 0.015),
+            wrist_surface_offset_max_m=getattr(args, 'wrist_surface_offset_max_m', 0.030),
         )
     artifacts = ArtifactStore(out_dir)
     artifacts.write_pickle(artifacts.stage_dir("40_backend_raw") / "outputs.pkl", serialize_backend_outputs(raw_outputs))
@@ -656,6 +665,9 @@ def run_mesh_recovery(cleaned_data, backend_bundle, renderer, args, out_dir, fps
                 raw_outputs, args.depth_dir, len(cleaned_data),
                 expected_reference_camera=infer_camera_side(getattr(args, 'input', None)),
                 collect_reference_quality=_needs_reference_quality(args),
+                wrist_surface_compensation=getattr(args, 'wrist_surface_depth_compensation', False),
+                wrist_surface_offset_min_m=getattr(args, 'wrist_surface_offset_min_m', 0.015),
+                wrist_surface_offset_max_m=getattr(args, 'wrist_surface_offset_max_m', 0.030),
             )
             raw_outputs, cleaned_data = _recover_partial_outputs(
                 raw_outputs, cleaned_data, args, out_dir, stage='62_partial_hand_recovery')

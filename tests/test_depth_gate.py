@@ -3,12 +3,14 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import pytest
 
 from observation_frontend.depth_gate import (
     apply_depth_gate,
     resolve_depth_camera_intrinsics,
     resolve_depth_frames,
     scale_camera_intrinsics,
+    wrist_surface_depth_offset,
 )
 
 
@@ -127,6 +129,54 @@ def test_sensor_anchor_mode_keeps_mint_despite_original_depth_disagreement(tmp_p
         report["frames"][0]["hands"]["right"]["depth_difference_m"], 0.4
     )
     assert report["rejected_observations"] == 0
+
+
+def test_wrist_surface_depth_offset_depends_on_palm_orientation():
+    broad = np.zeros((21, 3), dtype=np.float32)
+    broad[5] = [0.04, 0.0, 0.0]
+    broad[9] = [0.0, 0.06, 0.0]
+    broad[17] = [-0.04, 0.0, 0.0]
+    edge = broad.copy()
+    edge[:, 2] = edge[:, 1]
+    edge[:, 1] = 0.0
+
+    broad_offset, broad_info = wrist_surface_depth_offset(broad)
+    edge_offset, edge_info = wrist_surface_depth_offset(edge)
+
+    assert broad_info["enabled"] is True
+    assert broad_info["facing_score"] == pytest.approx(1.0)
+    assert broad_offset == pytest.approx(0.015)
+    assert edge_info["facing_score"] == pytest.approx(0.0)
+    assert edge_offset == pytest.approx(0.030)
+
+
+def test_sensor_anchor_depth_compensation_records_surface_and_center_depth(tmp_path):
+    depth_root = _write_depth_sequence(tmp_path / "depth", [990])
+    images = _images(tmp_path, 1)
+    frames = _frames(1)
+    frames[0]["hands"][0]["keypoints_2d"][0] = [20, 20, 1]
+    joints = np.zeros((21, 3), dtype=np.float32)
+    joints[:, 2] = 0.9
+    joints[5] = [0.04, 0.0, 0.9]
+    joints[9] = [0.0, 0.06, 0.9]
+    joints[17] = [-0.04, 0.0, 0.9]
+    frames[0]["hands"][0]["meta"].update({
+        "joints_3d_camera": joints,
+        "camera_frame": "opencv_x_right_y_down_z_forward",
+        "joint_order": "openpose21",
+    })
+
+    gated, report = apply_depth_gate(
+        frames, images, depth_root, wrist_only=True, sensor_anchor=True,
+        max_depth_m=1.0, wrist_surface_compensation=True,
+    )
+
+    assert len(gated[0]["hands"]) == 0
+    diagnostic = report["frames"][0]["hands"]["right"]
+    assert diagnostic["reasons"] == ["absolute_depth_limit"]
+    assert diagnostic["sensor_wrist_surface_depth_m"] == pytest.approx(0.99)
+    assert diagnostic["wrist_surface_offset_m"] == pytest.approx(0.015)
+    assert diagnostic["sensor_wrist_depth_m"] == pytest.approx(1.005)
 
 
 def test_sensor_anchor_max_depth_and_missing_depth(tmp_path):

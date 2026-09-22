@@ -178,6 +178,7 @@ python run.py \
     --depth_dir "$DEPTH_DIR" \
     --depth_max_m 1.0 \
     --mint_depth_sensor_anchor \
+    --wrist_surface_depth_compensation \
     --motion_gate \
     --mint_3d_consistency_gate \
     --hmr_primary_policy \
